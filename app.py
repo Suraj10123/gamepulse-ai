@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GamePulse - Video Game News, Reviews & Editorial Digest
-With Conversational Pulsar AI (Dynamic Gaming Taste Mapping & Multi-Turn Memory)
+100% Live Ingestion • Real-Time Database Grounded AI • Zero Hardcoded Fallbacks
 100% Python Standard Library (Zero External Dependencies)
 """
 
@@ -16,7 +16,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import re
 import email.utils
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ==========================================
@@ -37,25 +37,21 @@ if os.path.exists(env_path):
 PORT = int(os.environ.get("PORT", 8080))
 DB_FILE = os.environ.get("DB_FILE", "gaming_news.db")
 REFRESH_INTERVAL_MINUTES = int(os.environ.get("REFRESH_MINUTES", 15))
+MAX_ARTICLE_AGE_DAYS = 14  # Strict filter: Discard any article older than 14 days
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip().strip("'\"")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
 GITHUB_REPO_URL = os.environ.get("GITHUB_URL", "https://github.com/Suraj10123/gamepulse-ai")
 
-# 100% Live Feeds Only across News, Reviews, and Industry
+# 100% Live Feeds Only
 FEEDS = [
-    # General News & Discussion
     {"name": "r/Games", "url": "https://www.reddit.com/r/Games/.rss?limit=25", "category": "Community", "default_tag": "NEWS"},
     {"name": "Polygon", "url": "https://www.polygon.com/rss/index.xml", "category": "General", "default_tag": "NEWS"},
     {"name": "Gematsu", "url": "https://www.gematsu.com/feed", "category": "Announcements", "default_tag": "TRAILER"},
-
-    # Dedicated Live Reviews & Scores
     {"name": "IGN Reviews", "url": "https://feeds.feedburner.com/ign/reviews-all", "category": "Reviews", "default_tag": "REVIEW"},
     {"name": "GameSpot Reviews", "url": "https://www.gamespot.com/feeds/reviews/", "category": "Reviews", "default_tag": "REVIEW"},
     {"name": "PC Gamer Reviews", "url": "https://www.pcgamer.com/reviews/rss/", "category": "Reviews", "default_tag": "REVIEW"},
     {"name": "Eurogamer Reviews", "url": "https://www.eurogamer.net/feed/reviews", "category": "Reviews", "default_tag": "REVIEW"},
-
-    # Dedicated Live Industry News
     {"name": "GamesIndustry.biz", "url": "https://www.gamesindustry.biz/feed", "category": "Industry", "default_tag": "INDUSTRY"}
 ]
 
@@ -63,7 +59,7 @@ DEFAULT_UA = "desktop:gamepulse.app:v1.0 (by /u/surajpatel)"
 
 
 # ==========================================
-# DATABASE LAYER & CLEANUP
+# DATABASE LAYER & PURGE
 # ==========================================
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -102,7 +98,7 @@ def init_db():
             )
         """)
         
-        # Purge any legacy mock seed rows
+        # Purge any legacy test rows
         conn.execute("""
             DELETE FROM articles WHERE 
             source_url LIKE '%ign.com/articles/astro-bot%' OR 
@@ -114,25 +110,35 @@ def init_db():
 
 
 # ==========================================
-# FEED AGGREGATION & DATE PARSING
+# FRESHNESS GATEKEEPER & DATE PARSING
 # ==========================================
-def parse_pub_date(pub_date_str):
+def parse_and_validate_date(pub_date_str):
     if not pub_date_str:
-        return datetime.now(timezone.utc).strftime("%b %d, %Y")
+        return (True, datetime.now(timezone.utc).strftime("%b %d, %Y"))
+    
+    dt = None
     try:
         parsed_tuple = email.utils.parsedate_tz(pub_date_str)
         if parsed_tuple:
             timestamp = email.utils.mktime_tz(parsed_tuple)
-            return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%b %d, %Y")
+            dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
     except Exception:
         pass
-    try:
-        clean_iso = pub_date_str.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(clean_iso)
-        return dt.strftime("%b %d, %Y")
-    except Exception:
-        pass
-    return pub_date_str[:10] if len(pub_date_str) >= 10 else "Recent"
+
+    if dt is None:
+        try:
+            clean_iso = pub_date_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean_iso)
+        except Exception:
+            pass
+
+    if dt:
+        now = datetime.now(timezone.utc)
+        if (now - dt) > timedelta(days=MAX_ARTICLE_AGE_DAYS):
+            return (False, None)
+        return (True, dt.strftime("%b %d, %Y"))
+
+    return (True, pub_date_str[:10] if len(pub_date_str) >= 10 else "Recent")
 
 def clean_html(raw_html):
     if not raw_html:
@@ -184,7 +190,10 @@ def fetch_feed_items(feed_info):
                     link = item.findtext("link", "").strip()
                     desc = item.findtext("description", "").strip()
                     pub_date_raw = item.findtext("pubDate", "").strip()
-                    pub_date = parse_pub_date(pub_date_raw)
+                    
+                    is_valid, formatted_date = parse_and_validate_date(pub_date_raw)
+                    if not is_valid:
+                        continue
                     
                     image_url = ""
                     enclosure = item.find("enclosure")
@@ -210,7 +219,7 @@ def fetch_feed_items(feed_info):
                             "link": link,
                             "summary": clean_html(desc)[:600],
                             "image_url": image_url,
-                            "published_at": pub_date,
+                            "published_at": formatted_date,
                             "source_name": feed_info["name"],
                             "category": feed_info["category"],
                             "default_tag": feed_info.get("default_tag", "NEWS")
@@ -229,16 +238,19 @@ def fetch_feed_items(feed_info):
                     content_elem = find_first_elem(entry, ["atom:content", "content", "atom:summary", "summary"], ns)
                     raw_content = content_elem.text.strip() if (content_elem is not None and content_elem.text) else ""
                     
+                    updated_elem = find_first_elem(entry, ["atom:updated", "updated"], ns)
+                    pub_date_raw = updated_elem.text.strip() if (updated_elem is not None and updated_elem.text) else ""
+                    
+                    is_valid, formatted_date = parse_and_validate_date(pub_date_raw)
+                    if not is_valid:
+                        continue
+
                     image_url = ""
                     media_thumb = entry.find("media:thumbnail", ns)
                     if media_thumb is not None:
                         image_url = media_thumb.attrib.get("url", "")
                     if not image_url:
                         image_url = extract_image_from_html(raw_content)
-
-                    updated_elem = find_first_elem(entry, ["atom:updated", "updated"], ns)
-                    pub_date_raw = updated_elem.text.strip() if (updated_elem is not None and updated_elem.text) else ""
-                    pub_date = parse_pub_date(pub_date_raw)
                     
                     if title and link:
                         items.append({
@@ -246,7 +258,7 @@ def fetch_feed_items(feed_info):
                             "link": link,
                             "summary": clean_html(raw_content)[:600],
                             "image_url": image_url,
-                            "published_at": pub_date,
+                            "published_at": formatted_date,
                             "source_name": feed_info["name"],
                             "category": feed_info["category"],
                             "default_tag": feed_info.get("default_tag", "NEWS")
@@ -286,13 +298,13 @@ def call_groq_api(prompt, api_key):
 
 def rule_based_synthesizer(title, summary, category, default_tag="NEWS"):
     title_lower = title.lower()
-    if default_tag == "REVIEW" or any(w in title_lower for w in ["review", "impressions", "verdict", "score", "benchmarks"]):
+    if default_tag == "REVIEW" or any(w in title_lower for w in ["review", "impressions", "verdict", "score"]):
         tag = "REVIEW"
     elif default_tag == "INDUSTRY" or any(w in title_lower for w in ["layoff", "studio", "sales", "ceo", "sony", "xbox", "nintendo", "valve", "financial", "acquisition"]):
         tag = "INDUSTRY"
-    elif any(w in title_lower for w in ["trailer", "gameplay", "revealed", "teaser", "first look"]):
+    elif any(w in title_lower for w in ["trailer", "gameplay", "revealed", "teaser", "first look", "announced"]):
         tag = "TRAILER"
-    elif any(w in title_lower for w in ["patch", "update", "dlc", "expansion", "hotfix", "season"]):
+    elif any(w in title_lower for w in ["patch", "update", "dlc", "expansion", "hotfix"]):
         tag = "UPDATE"
     elif any(w in title_lower for w in ["rumor", "leak", "report:", "insider"]):
         tag = "RUMOR"
@@ -403,16 +415,16 @@ def query_local_articles_for_chat(user_msg):
     cursor = conn.cursor()
     
     msg_lower = user_msg.lower()
-    if "ign" in msg_lower:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url FROM articles WHERE source_name LIKE '%IGN%' ORDER BY id DESC LIMIT 5")
+    if any(w in msg_lower for w in ["release", "new game", "this week", "available", "launch", "announced"]):
+        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE title LIKE '%announce%' OR title LIKE '%available%' OR title LIKE '%release%' OR tag='TRAILER' ORDER BY id DESC LIMIT 6")
+    elif "ign" in msg_lower:
+        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE source_name LIKE '%IGN%' ORDER BY id DESC LIMIT 5")
     elif "review" in msg_lower:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url FROM articles WHERE tag='REVIEW' OR category LIKE '%Review%' ORDER BY id DESC LIMIT 5")
+        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE tag='REVIEW' OR category LIKE '%Review%' ORDER BY id DESC LIMIT 5")
     elif "industry" in msg_lower:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url FROM articles WHERE tag='INDUSTRY' OR category LIKE '%Industry%' ORDER BY id DESC LIMIT 5")
-    elif "trailer" in msg_lower:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url FROM articles WHERE tag='TRAILER' ORDER BY id DESC LIMIT 5")
+        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE tag='INDUSTRY' OR category LIKE '%Industry%' ORDER BY id DESC LIMIT 5")
     else:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url FROM articles ORDER BY id DESC LIMIT 8")
+        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles ORDER BY id DESC LIMIT 8")
         
     rows = cursor.fetchall()
     conn.close()
@@ -421,7 +433,7 @@ def query_local_articles_for_chat(user_msg):
     for r in rows:
         title = r["ai_title"] or r["title"]
         img_part = f" ![{title}]({r['image_url']})" if r["image_url"] else ""
-        context_items.append(f"- **{title}** (Source: {r['source_name']}) — {r['summary'][:180]}... [Read Article]({r['source_url']}){img_part}")
+        context_items.append(f"- **{title}** (Source: {r['source_name']}, Date: {r['published_at']}) — {r['summary'][:180]}... [Read Article]({r['source_url']}){img_part}")
     return "\n".join(context_items)
 
 
@@ -434,41 +446,23 @@ def chat_with_pulsar(user_message, history=None):
     today_str = datetime.now().strftime("%A, %B %d, %Y")
     recent_context = query_local_articles_for_chat(user_message)
 
-    # Live OpenCritic lookup for games mentioned
-    verified_scores_context = []
-    common_game_names = [
-        "Forza Horizon 5", "The Crew Motorfest", "Gran Turismo 7", "Need for Speed Unbound",
-        "Baldur's Gate 3", "Elden Ring", "Final Fantasy VII Rebirth", "Metaphor: ReFantazio",
-        "Astro Bot", "Black Myth: Wukong", "Star Wars Outlaws", "Space Marine 2",
-        "Resident Evil 4", "Dead Space", "Alan Wake 2", "Signalis", "Silent Hill 2",
-        "The Legend of Zelda: Echoes of Wisdom", "Diablo IV", "Cyberpunk 2077", "The Witcher 3"
-    ]
-    for gname in common_game_names:
-        if gname.lower() in msg_lower:
-            verified = fetch_opencritic_score(gname)
-            if verified:
-                verified_scores_context.append(f"- VERIFIED RATING: **{verified['title']}** &rarr; OpenCritic Score: **{verified['score']}** ({verified['tier']} Tier, {verified['percent_recommended']}% Recommended) [OpenCritic Breakdown]({verified['url']})")
-
-    scores_context_str = "\n".join(verified_scores_context) if verified_scores_context else "None queried. Only cite verified factual review scores."
-
     system_prompt = f"""
     You are Pulsar, the official interactive AI gaming concierge and assistant for GamePulse (Current Year: {current_year}, Today: {today_str}).
 
-    PERSONALITY & CONVERSATIONAL TASTE MAPPING:
-    - Speak like a passionate, knowledgeable gaming expert and concierge.
-    - When a user mentions a game or franchise they like (e.g. 'I like Forza Horizon', 'I like Zelda', 'I like Diablo'), respond conversationally:
-      * E.g. "Oh, you're a fan of Forza Horizon! If you love the open-world festival atmosphere and accessible car physics, have you checked out The Crew Motorfest or Need for Speed Unbound? Here is how they compare..."
-    - Map gaming DNA across franchises:
-      * Racing: Forza Horizon &rarr; The Crew Motorfest (open-world island festival), Need for Speed Unbound (stylish street racing & cops), Gran Turismo 7 (track simulation physics & DualSense haptics on PS5).
-      * Survival Horror: Resident Evil / Dead Space &rarr; Alan Wake 2, The Callisto Protocol, Signalis, Silent Hill 2 Remake.
-      * RPGs: Zelda / Diablo / Dark Souls &rarr; Elden Ring, Baldur's Gate 3, Metaphor: ReFantazio, Final Fantasy VII Rebirth, Path of Exile, Last Epoch.
-    - MULTI-TURN MEMORY: You have access to previous turns. Retain memory of the user's platform (e.g. PS5, PC, Switch) and favorite genres across the session.
-    - TEMPORAL ACCURACY: When asked for games 'this year', focus on {current_year} and late {current_year - 1} releases.
-    - FACTUAL INTEGRITY: Never invent or guess numerical scores. Only cite verified scores or describe critical consensus qualitatively.
-    - STRICT SAFETY: Never use profanity, vulgarity, or inappropriate language.
-
-    LIVE VERIFIED OPENSCORE CONTEXT:
-    {scores_context_str}
+    CRITICAL REASONING & FACTUAL ACCURACY RULES:
+    1. TEMPORAL ACCURACY & GROUNDING:
+       - Today is {today_str}. The current year is {current_year}.
+       - When asked about 'new game releases this week' or 'new games', report directly on current launches and announcements from the live database articles context provided below.
+       - NEVER list games released in previous years (like 2024 or 2023) as 'this week's releases'.
+       - When recommending RPGs or action games from '{current_year}', ensure all titles are verified {current_year} releases.
+    2. CONVERSATIONAL TASTE MAPPING:
+       - Respond conversationally when users mention franchises (e.g. Forza Horizon, Diablo, Resident Evil). Explain how recommended games compare mechanically (e.g. open-world festival vs simulation vs arcade).
+    3. MULTI-TURN MEMORY:
+       - Maintain memory of platforms and genres mentioned by the user in previous turns.
+    4. ZERO HALLUCINATED SCORES:
+       - Only cite verified scores or describe critical consensus qualitatively.
+    5. STRICT SAFETY:
+       - Never use profanity, vulgarity, or inappropriate language.
 
     LIVE DATABASE ARTICLES TODAY:
     {recent_context}
@@ -509,71 +503,12 @@ def chat_with_pulsar(user_message, history=None):
         except Exception as e:
             print(f"[!] Groq call note: {e}")
 
-    # ==========================================
-    # DYNAMIC CONTEXTUAL GAMING FALLBACK ENGINE
-    # ==========================================
-    if any(w in msg_lower for w in ["forza", "racing", "car", "gran turismo", "crew", "need for speed"]):
-        return (
-            "Oh, you're a fan of **Forza Horizon**! If you love the open-world festival atmosphere, accessible yet nuanced driving physics, and vehicle customization, here is how the top modern alternatives compare:\n\n"
-            "1. **The Crew Motorfest** *(PC, PS5, Xbox Series X|S — OpenCritic 76)*\n"
-            "- **Why it fits**: Set on the Hawaiian island of O'ahu, Motorfest embraces the exact same open-world festival car culture as Forza Horizon, with dedicated playlists for Japanese tuners, vintage classics, and electric hypercars.\n\n"
-            "2. **Need for Speed Unbound** *(PC, PS5, Xbox Series X|S — OpenCritic 77)*\n"
-            "- **Why it fits**: Combines realistic vehicle rendering with stylized anime/graffiti effects, deep body kit customization, and intense high-stakes cop pursuits in an urban street sandbox.\n\n"
-            "3. **Gran Turismo 7** *(PlayStation 5 / PS4 Exclusive — Metacritic 87 / OpenCritic 88 Mighty)*\n"
-            "- **Why it fits**: If you want deeper track simulation physics, automotive history, and breathtaking DualSense adaptive trigger feedback on real-world circuits.\n\n"
-            "4. **Wreckfest** / **Burnout Paradise Remastered**\n"
-            "- **Why they fit**: For high-speed arcade adrenaline, soft-body metal deformation, and vehicular mayhem.\n\n"
-            "What platform are you playing on, and do you prefer open-world cruising or track circuits?"
-        )
-
-    if "this year" in msg_lower and any(w in msg_lower for w in ["rpg", "role-playing"]):
-        return (
-            f"### ⚔️ **Top Critically Acclaimed RPGs Released in {current_year}**\n\n"
-            "1. **Metaphor: ReFantazio** *(PC, PS5, Xbox Series X|S — Metacritic 94)*\n"
-            "- From the creative team behind *Persona 5*, featuring a fantasy kingdom tournament, fast-paced turn-based tactical combat, and archetype progression.\n\n"
-            "2. **Final Fantasy VII Rebirth** *(PlayStation 5 Exclusive — Metacritic 92)*\n"
-            "- Expansive open-world adventure beyond Midgar, tactical synergy party combat, and rich storytelling.\n\n"
-            "3. **Elden Ring: Shadow of the Erdtree** *(PC, PS5, Xbox Series X|S — Metacritic 95)*\n"
-            "- Massive new Land of Shadow expansion introducing 8 new weapon classes and dense vertical exploration.\n\n"
-            "4. **Like a Dragon: Infinite Wealth** *(PC, PS5, Xbox Series X|S — Metacritic 89)*\n"
-            "- Hawaiian setting with dynamic turn-based job combat, absurd minigames, and heartfelt narrative.\n\n"
-            "5. **Dragon's Dogma 2** *(PC, PS5, Xbox Series X|S — Metacritic 86)*\n"
-            "- Unrivaled pawn AI companions, physics-driven monster climbing, and emergent fantasy combat."
-        )
-
-    if any(w in msg_lower for w in ["release", "new game", "this week", "calendar", "schedule"]):
-        return (
-            "### 🗓️ **Notable Current & Upcoming Video Game Releases**\n\n"
-            "- **Star Wars Outlaws** *(PC, PS5, Xbox Series X|S)* — Open-World Action Adventure\n"
-            "- **Astro Bot** *(PlayStation 5 Exclusive — Metacritic 94)* — 3D Platformer\n"
-            "- **Space Marine 2** *(PC, PS5, Xbox Series X|S)* — Third-Person Action Shooter\n"
-            "- **The Legend of Zelda: Echoes of Wisdom** *(Nintendo Switch Exclusive)* — Top-Down Adventure\n"
-            "- **Silent Hill 2 Remake** *(PS5, PC)* — Psychological Survival Horror\n"
-            "- **Metaphor: ReFantazio** *(PC, PS5, Xbox Series X|S)* — Fantasy JRPG\n\n"
-            "Which platform or genre would you like to explore further?"
-        )
-
-    if any(w in msg_lower for w in ["resident evil", "dead space", "horror", "survival"]):
-        return (
-            "### 🔦 **Top Survival Horror & Action Games Like Resident Evil / Dead Space**\n\n"
-            "1. **Alan Wake 2** *(PS5, Xbox Series X|S, PC — OpenCritic 89 Mighty)*\n"
-            "Over-the-shoulder tactical gunplay, inventory management grid, and psychological horror.\n\n"
-            "2. **The Callisto Protocol** *(PS5, Xbox Series X|S, PC)*\n"
-            "Directed by Glen Schofield (creator of the original *Dead Space*), emphasizing visceral close-quarters combat.\n\n"
-            "3. **Signalis** *(PC, Switch, PlayStation, Xbox — OpenCritic 82 Strong)*\n"
-            "Classic survival horror resource conservation, inventory puzzles, and cosmic dread."
-        )
-
-    if "ign" in msg_lower or "article" in msg_lower or "today" in msg_lower:
-        return f"Here are the latest live indexed articles from our newsroom:\n\n{recent_context}"
-
+    # Pure Live Database Grounded Fallback (Zero Hardcoded Game Lists)
     return (
-        "Hi! I'm **Pulsar**, your GamePulse concierge. I can help you with:\n"
-        f"- 🏎️ **Taste Mapping**: E.g. *'I like Forza Horizon, what else should I play?'*, *'Games like Resident Evil or Zelda'*\n"
-        f"- ⚔️ **Genre Bests**: Ask for *'best RPG to play this year'*\n"
-        "- 🗓️ **Release Calendars**: Ask for *'new game releases this week'*\n"
-        "- ⭐ **Critic Ratings**: Ask for *'games with 85+ OpenCritic score'*\n"
-        "- 📰 **Live News**: Ask for *'articles from IGN today'*"
+        f"### 🎮 **Latest Live Reporting & Newsroom Context**\n\n"
+        f"Here are the latest verified game announcements, releases, and reviews from our live newsroom:\n\n"
+        f"{recent_context}\n\n"
+        "What specific genre or platform would you like to explore?"
     )
 
 
@@ -1280,7 +1215,6 @@ class WebHandler(BaseHTTPRequestHandler):
 
         self.send_response(404)
         self.end_headers()
-        self.wfile.write(b"Not Found")
 
     def log_message(self, format, *args):
         return
