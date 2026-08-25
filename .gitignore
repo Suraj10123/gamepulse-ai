@@ -1,0 +1,4 @@
+.env
+gaming_news.db
+__pycache__/
+*.pyc
