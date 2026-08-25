@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GamePulse - Video Game News, Reviews & Editorial Digest
-Fact-Verified Pulsar AI • Dedicated Review/Industry Feeds • 15m Auto-Refresh
+With Conversational Pulsar AI (Dynamic Gaming Taste Mapping & Multi-Turn Memory)
 100% Python Standard Library (Zero External Dependencies)
 """
 
@@ -15,7 +15,7 @@ import urllib.request
 import urllib.parse
 import xml.etree.ElementTree as ET
 import re
-import webbrowser
+import email.utils
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -42,20 +42,20 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 GITHUB_REPO_URL = os.environ.get("GITHUB_URL", "https://github.com/Suraj10123/gamepulse-ai")
 
-# Dedicated Feeds across News, Dedicated Reviews, and Industry
+# 100% Live Feeds Only across News, Reviews, and Industry
 FEEDS = [
     # General News & Discussion
     {"name": "r/Games", "url": "https://www.reddit.com/r/Games/.rss?limit=25", "category": "Community", "default_tag": "NEWS"},
     {"name": "Polygon", "url": "https://www.polygon.com/rss/index.xml", "category": "General", "default_tag": "NEWS"},
     {"name": "Gematsu", "url": "https://www.gematsu.com/feed", "category": "Announcements", "default_tag": "TRAILER"},
 
-    # Dedicated Reviews & Scores
+    # Dedicated Live Reviews & Scores
     {"name": "IGN Reviews", "url": "https://feeds.feedburner.com/ign/reviews-all", "category": "Reviews", "default_tag": "REVIEW"},
     {"name": "GameSpot Reviews", "url": "https://www.gamespot.com/feeds/reviews/", "category": "Reviews", "default_tag": "REVIEW"},
     {"name": "PC Gamer Reviews", "url": "https://www.pcgamer.com/reviews/rss/", "category": "Reviews", "default_tag": "REVIEW"},
     {"name": "Eurogamer Reviews", "url": "https://www.eurogamer.net/feed/reviews", "category": "Reviews", "default_tag": "REVIEW"},
 
-    # Dedicated Industry & Financials
+    # Dedicated Live Industry News
     {"name": "GamesIndustry.biz", "url": "https://www.gamesindustry.biz/feed", "category": "Industry", "default_tag": "INDUSTRY"}
 ]
 
@@ -63,7 +63,7 @@ DEFAULT_UA = "desktop:gamepulse.app:v1.0 (by /u/surajpatel)"
 
 
 # ==========================================
-# DATABASE LAYER & AUTO-SEEDING
+# DATABASE LAYER & CLEANUP
 # ==========================================
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -102,62 +102,38 @@ def init_db():
             )
         """)
         
-        # Seed initial reviews & industry articles if empty
-        cur = conn.execute("SELECT COUNT(*) as count FROM articles WHERE tag='REVIEW'")
-        if cur.fetchone()["count"] == 0:
-            now_iso = datetime.now(timezone.utc).isoformat()
-            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            seed_items = [
-                (
-                    "Astro Bot Review - A Masterpiece of Platforming",
-                    "Astro Bot Review: Sony's Definitive 3D Platforming Masterpiece",
-                    "Astro Bot is a triumphant celebration of video games, delivering inventive level mechanics, flawless DualSense implementation, and joyous creative platforming that ranks among the highest-rated games of this generation.",
-                    json.dumps(["OpenCritic Top Score: 94 (Mighty Tier)", "Universal praise for creative level design and DualSense haptics", "Over 50 inventive stages and PlayStation legacy cameos"]),
-                    "Reviews", "REVIEW", "IGN Reviews", "https://www.ign.com/articles/astro-bot-review",
-                    "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1086940/header.jpg",
-                    today_str, now_iso, today_str, "Positive"
-                ),
-                (
-                    "Elden Ring: Shadow of the Erdtree Review",
-                    "Elden Ring: Shadow of the Erdtree Review — FromSoftware Sets the Benchmark",
-                    "Shadow of the Erdtree expands on Elden Ring with a massive new Land of Shadow, punishing boss encounters, rich weapon classes, and breathtaking layered open-world discovery.",
-                    json.dumps(["OpenCritic Top Score: 95 (Mighty Tier)", "Monumental expansion rivaling full standalone games in scale", "Introduces 8 new weapon categories and intricate vertical level design"]),
-                    "Reviews", "REVIEW", "Eurogamer Reviews", "https://www.eurogamer.net/elden-ring-shadow-of-the-erdtree-review",
-                    "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1245620/header.jpg",
-                    today_str, now_iso, today_str, "Positive"
-                ),
-                (
-                    "Final Fantasy VII Rebirth Review",
-                    "Final Fantasy VII Rebirth Review: A Tremendous, Expansive JRPG Triumph",
-                    "Square Enix expands the journey beyond Midgar into a vibrant open world filled with tactical combat refinements, engrossing mini-games, and deep character development.",
-                    json.dumps(["OpenCritic Top Score: 92 (Mighty Tier)", "Expanded synergy combat system and dynamic open regions", "Over 80 hours of high-production RPG content"]),
-                    "Reviews", "REVIEW", "GameSpot Reviews", "https://www.gamespot.com/reviews/final-fantasy-7-rebirth-review/1900-6418187/",
-                    "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1462040/header.jpg",
-                    today_str, now_iso, today_str, "Positive"
-                ),
-                (
-                    "PlayStation and Xbox Hardware Sales and Studio Strategic Outlook",
-                    "Industry Report: Console Hardware Trajectories and Strategic Shifts in 2026",
-                    "Market analysis details current console hardware sales trajectories across PlayStation 5 and Xbox Series X|S, examining the industry pivot toward multiplatform releases and cloud ecosystems.",
-                    json.dumps(["Cross-platform publishing strategies accelerating across major publishers", "Hardware cycle analysis and mid-generation console trends", "Subscription services and PC release windows expanding"]),
-                    "Industry", "INDUSTRY", "GamesIndustry.biz", "https://www.gamesindustry.biz/console-market-trends",
-                    "https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/2183900/header.jpg",
-                    today_str, now_iso, today_str, "Neutral"
-                )
-            ]
-            conn.executemany("""
-                INSERT OR IGNORE INTO articles (
-                    title, ai_title, summary, key_takeaways, category, tag,
-                    source_name, source_url, image_url, published_at, created_at, batch_date, sentiment
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, seed_items)
-
+        # Purge any legacy mock seed rows
+        conn.execute("""
+            DELETE FROM articles WHERE 
+            source_url LIKE '%ign.com/articles/astro-bot%' OR 
+            source_url LIKE '%gamesindustry.biz/console-market%' OR 
+            source_url LIKE '%eurogamer.net/elden-ring-shadow%' OR
+            source_url LIKE '%gamespot.com/reviews/final-fantasy-7-rebirth%'
+        """)
         conn.commit()
 
 
 # ==========================================
-# FEED AGGREGATION & CLEANING
+# FEED AGGREGATION & DATE PARSING
 # ==========================================
+def parse_pub_date(pub_date_str):
+    if not pub_date_str:
+        return datetime.now(timezone.utc).strftime("%b %d, %Y")
+    try:
+        parsed_tuple = email.utils.parsedate_tz(pub_date_str)
+        if parsed_tuple:
+            timestamp = email.utils.mktime_tz(parsed_tuple)
+            return datetime.fromtimestamp(timestamp, tz=timezone.utc).strftime("%b %d, %Y")
+    except Exception:
+        pass
+    try:
+        clean_iso = pub_date_str.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(clean_iso)
+        return dt.strftime("%b %d, %Y")
+    except Exception:
+        pass
+    return pub_date_str[:10] if len(pub_date_str) >= 10 else "Recent"
+
 def clean_html(raw_html):
     if not raw_html:
         return ""
@@ -207,7 +183,8 @@ def fetch_feed_items(feed_info):
                     title = item.findtext("title", "").strip()
                     link = item.findtext("link", "").strip()
                     desc = item.findtext("description", "").strip()
-                    pub_date = item.findtext("pubDate", "").strip()
+                    pub_date_raw = item.findtext("pubDate", "").strip()
+                    pub_date = parse_pub_date(pub_date_raw)
                     
                     image_url = ""
                     enclosure = item.find("enclosure")
@@ -260,7 +237,8 @@ def fetch_feed_items(feed_info):
                         image_url = extract_image_from_html(raw_content)
 
                     updated_elem = find_first_elem(entry, ["atom:updated", "updated"], ns)
-                    pub_date = updated_elem.text.strip() if (updated_elem is not None and updated_elem.text) else ""
+                    pub_date_raw = updated_elem.text.strip() if (updated_elem is not None and updated_elem.text) else ""
+                    pub_date = parse_pub_date(pub_date_raw)
                     
                     if title and link:
                         items.append({
@@ -274,7 +252,7 @@ def fetch_feed_items(feed_info):
                             "default_tag": feed_info.get("default_tag", "NEWS")
                         })
     except Exception as e:
-        print(f"[!] Feed notice: {feed_info['name']} ({e})")
+        print(f"[!] Feed note: {feed_info['name']} ({e})")
     return items
 
 
@@ -448,16 +426,18 @@ def query_local_articles_for_chat(user_msg):
 
 
 # ==========================================
-# ROBUST PULSAR AI CHAT CONCIERGE ENGINE
+# MULTI-TURN MEMORY PULSAR AI CONCIERGE
 # ==========================================
 def chat_with_pulsar(user_message, history=None):
     msg_lower = user_message.lower().strip()
+    current_year = datetime.now().year
     today_str = datetime.now().strftime("%A, %B %d, %Y")
     recent_context = query_local_articles_for_chat(user_message)
 
-    # 1. Live OpenCritic lookup for games mentioned
+    # Live OpenCritic lookup for games mentioned
     verified_scores_context = []
     common_game_names = [
+        "Forza Horizon 5", "The Crew Motorfest", "Gran Turismo 7", "Need for Speed Unbound",
         "Baldur's Gate 3", "Elden Ring", "Final Fantasy VII Rebirth", "Metaphor: ReFantazio",
         "Astro Bot", "Black Myth: Wukong", "Star Wars Outlaws", "Space Marine 2",
         "Resident Evil 4", "Dead Space", "Alan Wake 2", "Signalis", "Silent Hill 2",
@@ -472,14 +452,20 @@ def chat_with_pulsar(user_message, history=None):
     scores_context_str = "\n".join(verified_scores_context) if verified_scores_context else "None queried. Only cite verified factual review scores."
 
     system_prompt = f"""
-    You are Pulsar, the official interactive AI gaming concierge and assistant for GamePulse (today is {today_str}).
+    You are Pulsar, the official interactive AI gaming concierge and assistant for GamePulse (Current Year: {current_year}, Today: {today_str}).
 
-    CORE INSTRUCTIONS:
-    1. 'Articles posted today' or outlet queries (e.g. 'articles from IGN today'): Summarize the relevant articles from the live database context below.
-    2. 'New game releases': List notable current and upcoming game releases across PC, PS5, Xbox Series X|S, Switch, and Switch 2 with dates, genres, and cover art.
-    3. 'Find me something to play' / Genre Queries (e.g. 'best RPG to play', 'games like Zelda or Diablo or Resident Evil'): Act as a knowledgeable gaming concierge. Recommend games with high critic reception (OpenCritic/Metacritic 85+), explain why they match the user's taste, and include cover art using `![Game Title](image_url)`.
-    4. FACTUAL ACCURACY: Never invent numerical scores. Only cite verified scores or describe critical consensus qualitatively.
-    5. STRICT SAFETY: Never use profanity or inappropriate language. Keep responses helpful and professional.
+    PERSONALITY & CONVERSATIONAL TASTE MAPPING:
+    - Speak like a passionate, knowledgeable gaming expert and concierge.
+    - When a user mentions a game or franchise they like (e.g. 'I like Forza Horizon', 'I like Zelda', 'I like Diablo'), respond conversationally:
+      * E.g. "Oh, you're a fan of Forza Horizon! If you love the open-world festival atmosphere and accessible car physics, have you checked out The Crew Motorfest or Need for Speed Unbound? Here is how they compare..."
+    - Map gaming DNA across franchises:
+      * Racing: Forza Horizon &rarr; The Crew Motorfest (open-world island festival), Need for Speed Unbound (stylish street racing & cops), Gran Turismo 7 (track simulation physics & DualSense haptics on PS5).
+      * Survival Horror: Resident Evil / Dead Space &rarr; Alan Wake 2, The Callisto Protocol, Signalis, Silent Hill 2 Remake.
+      * RPGs: Zelda / Diablo / Dark Souls &rarr; Elden Ring, Baldur's Gate 3, Metaphor: ReFantazio, Final Fantasy VII Rebirth, Path of Exile, Last Epoch.
+    - MULTI-TURN MEMORY: You have access to previous turns. Retain memory of the user's platform (e.g. PS5, PC, Switch) and favorite genres across the session.
+    - TEMPORAL ACCURACY: When asked for games 'this year', focus on {current_year} and late {current_year - 1} releases.
+    - FACTUAL INTEGRITY: Never invent or guess numerical scores. Only cite verified scores or describe critical consensus qualitatively.
+    - STRICT SAFETY: Never use profanity, vulgarity, or inappropriate language.
 
     LIVE VERIFIED OPENSCORE CONTEXT:
     {scores_context_str}
@@ -488,18 +474,17 @@ def chat_with_pulsar(user_message, history=None):
     {recent_context}
     """
 
-    # Sanitize message payload for Groq API
+    # Assemble conversation chain for multi-turn running memory
     clean_messages = [{"role": "system", "content": system_prompt}]
     if history and isinstance(history, list):
-        for h in history[-4:]:
+        for h in history[-8:]:
             if isinstance(h, dict) and h.get("role") in ["user", "assistant"] and h.get("content"):
                 clean_messages.append({"role": h["role"], "content": str(h["content"])})
     
-    # Ensure current user message is appended
     if not clean_messages or clean_messages[-1].get("content") != user_message:
         clean_messages.append({"role": "user", "content": user_message})
 
-    # Attempt Groq API Inference
+    # Execute Groq API Call
     if GROQ_API_KEY:
         try:
             url = "https://api.groq.com/openai/v1/chat/completions"
@@ -511,82 +496,81 @@ def chat_with_pulsar(user_message, history=None):
             payload = {
                 "model": "llama-3.1-8b-instant",
                 "messages": clean_messages,
-                "temperature": 0.15,
+                "temperature": 0.25,
                 "max_tokens": 700
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=12) as response:
+            with urllib.request.urlopen(req, timeout=14) as response:
                 res = json.loads(response.read().decode("utf-8"))
                 reply_content = res["choices"][0]["message"]["content"].strip()
                 if reply_content:
                     return reply_content
         except Exception as e:
-            print(f"[!] Groq inference notice: {e}")
+            print(f"[!] Groq call note: {e}")
 
     # ==========================================
-    # CONTEXTUAL GAMING KNOWLEDGE FALLBACK ENGINE
+    # DYNAMIC CONTEXTUAL GAMING FALLBACK ENGINE
     # ==========================================
-    if any(w in msg_lower for w in ["rpg", "role playing", "role-playing", "best rpg"]):
+    if any(w in msg_lower for w in ["forza", "racing", "car", "gran turismo", "crew", "need for speed"]):
         return (
-            "### ⚔️ **Top Critically Acclaimed RPGs to Play Right Now**\n\n"
-            "1. **Baldur's Gate 3** *(PC, PS5, Xbox Series X|S — Metacritic 96)*\n"
-            "![Baldur's Gate 3](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1086940/header.jpg)\n"
-            "- **Why it's essential**: Unmatched narrative freedom, tactical turn-based D&D combat, and unprecedented reactivity to every player choice.\n\n"
-            "2. **Elden Ring: Shadow of the Erdtree** *(PC, PS5, Xbox Series X|S — Metacritic 95)*\n"
-            "![Elden Ring](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1245620/header.jpg)\n"
-            "- **Why it's essential**: The gold standard of modern action RPG open-world exploration, intricate build crafting, and legendary boss battles.\n\n"
-            "3. **Final Fantasy VII Rebirth** *(PlayStation 5 Exclusive — Metacritic 92)*\n"
-            "![Final Fantasy VII Rebirth](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1462040/header.jpg)\n"
-            "- **Why it's essential**: Phenomenal real-time/tactical synergy combat, massive explorable world regions, and rich character storytelling.\n\n"
-            "4. **Metaphor: ReFantazio** *(PC, PS5, Xbox Series X|S — Metacritic 94)*\n"
-            "![Metaphor ReFantazio](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/2620600/header.jpg)\n"
-            "- **Why it's essential**: From the creators of *Persona 5*, combining fast-paced turn-based combat, stunning royal tournament fantasy, and deep archetype progression.\n\n"
-            "5. **Cyberpunk 2077: Phantom Liberty** *(PC, PS5, Xbox Series X|S — Metacritic 89)*\n"
-            "![Cyberpunk 2077](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1091500/header.jpg)\n"
-            "- **Why it's essential**: First-person sci-fi espionage thriller with deep build customization, cyberware abilities, and exceptional gunplay."
+            "Oh, you're a fan of **Forza Horizon**! If you love the open-world festival atmosphere, accessible yet nuanced driving physics, and vehicle customization, here is how the top modern alternatives compare:\n\n"
+            "1. **The Crew Motorfest** *(PC, PS5, Xbox Series X|S — OpenCritic 76)*\n"
+            "- **Why it fits**: Set on the Hawaiian island of O'ahu, Motorfest embraces the exact same open-world festival car culture as Forza Horizon, with dedicated playlists for Japanese tuners, vintage classics, and electric hypercars.\n\n"
+            "2. **Need for Speed Unbound** *(PC, PS5, Xbox Series X|S — OpenCritic 77)*\n"
+            "- **Why it fits**: Combines realistic vehicle rendering with stylized anime/graffiti effects, deep body kit customization, and intense high-stakes cop pursuits in an urban street sandbox.\n\n"
+            "3. **Gran Turismo 7** *(PlayStation 5 / PS4 Exclusive — Metacritic 87 / OpenCritic 88 Mighty)*\n"
+            "- **Why it fits**: If you want deeper track simulation physics, automotive history, and breathtaking DualSense adaptive trigger feedback on real-world circuits.\n\n"
+            "4. **Wreckfest** / **Burnout Paradise Remastered**\n"
+            "- **Why they fit**: For high-speed arcade adrenaline, soft-body metal deformation, and vehicular mayhem.\n\n"
+            "What platform are you playing on, and do you prefer open-world cruising or track circuits?"
         )
 
-    if any(w in msg_lower for w in ["release", "new game", "this week", "calendar", "coming out"]):
+    if "this year" in msg_lower and any(w in msg_lower for w in ["rpg", "role-playing"]):
         return (
-            "### 🗓️ **Notable Game Releases & Upcoming Schedule**\n\n"
-            "1. **Star Wars Outlaws** *(PC, PS5, Xbox Series X|S)*\n"
-            "![Star Wars Outlaws](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/2842040/header.jpg)\n"
-            "- **Genre**: Open-World Action Adventure | **Publisher**: Ubisoft / Massive\n\n"
-            "2. **Astro Bot** *(PlayStation 5 Exclusive — Metacritic 94)*\n"
-            "![Astro Bot](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1086940/header.jpg)\n"
-            "- **Genre**: 3D Platformer | **Developer**: Team Asobi\n\n"
-            "3. **Space Marine 2** *(PC, PS5, Xbox Series X|S)*\n"
-            "![Space Marine 2](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/2183900/header.jpg)\n"
-            "- **Genre**: Third-Person Action Shooter | **Publisher**: Focus Entertainment\n\n"
-            "4. **The Legend of Zelda: Echoes of Wisdom** *(Nintendo Switch Exclusive)*\n"
-            "![Zelda Echoes of Wisdom](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1262350/header.jpg)\n"
-            "- **Genre**: Top-Down Action Adventure | **Developer**: Nintendo\n\n"
-            "5. **Silent Hill 2 Remake** *(PS5, PC)*\n"
-            "![Silent Hill 2](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/2124490/header.jpg)\n"
-            "- **Genre**: Psychological Survival Horror | **Developer**: Bloober Team"
+            f"### ⚔️ **Top Critically Acclaimed RPGs Released in {current_year}**\n\n"
+            "1. **Metaphor: ReFantazio** *(PC, PS5, Xbox Series X|S — Metacritic 94)*\n"
+            "- From the creative team behind *Persona 5*, featuring a fantasy kingdom tournament, fast-paced turn-based tactical combat, and archetype progression.\n\n"
+            "2. **Final Fantasy VII Rebirth** *(PlayStation 5 Exclusive — Metacritic 92)*\n"
+            "- Expansive open-world adventure beyond Midgar, tactical synergy party combat, and rich storytelling.\n\n"
+            "3. **Elden Ring: Shadow of the Erdtree** *(PC, PS5, Xbox Series X|S — Metacritic 95)*\n"
+            "- Massive new Land of Shadow expansion introducing 8 new weapon classes and dense vertical exploration.\n\n"
+            "4. **Like a Dragon: Infinite Wealth** *(PC, PS5, Xbox Series X|S — Metacritic 89)*\n"
+            "- Hawaiian setting with dynamic turn-based job combat, absurd minigames, and heartfelt narrative.\n\n"
+            "5. **Dragon's Dogma 2** *(PC, PS5, Xbox Series X|S — Metacritic 86)*\n"
+            "- Unrivaled pawn AI companions, physics-driven monster climbing, and emergent fantasy combat."
         )
 
-    if any(w in msg_lower for w in ["resident evil", "dead space", "action", "horror", "survival"]):
+    if any(w in msg_lower for w in ["release", "new game", "this week", "calendar", "schedule"]):
+        return (
+            "### 🗓️ **Notable Current & Upcoming Video Game Releases**\n\n"
+            "- **Star Wars Outlaws** *(PC, PS5, Xbox Series X|S)* — Open-World Action Adventure\n"
+            "- **Astro Bot** *(PlayStation 5 Exclusive — Metacritic 94)* — 3D Platformer\n"
+            "- **Space Marine 2** *(PC, PS5, Xbox Series X|S)* — Third-Person Action Shooter\n"
+            "- **The Legend of Zelda: Echoes of Wisdom** *(Nintendo Switch Exclusive)* — Top-Down Adventure\n"
+            "- **Silent Hill 2 Remake** *(PS5, PC)* — Psychological Survival Horror\n"
+            "- **Metaphor: ReFantazio** *(PC, PS5, Xbox Series X|S)* — Fantasy JRPG\n\n"
+            "Which platform or genre would you like to explore further?"
+        )
+
+    if any(w in msg_lower for w in ["resident evil", "dead space", "horror", "survival"]):
         return (
             "### 🔦 **Top Survival Horror & Action Games Like Resident Evil / Dead Space**\n\n"
             "1. **Alan Wake 2** *(PS5, Xbox Series X|S, PC — OpenCritic 89 Mighty)*\n"
-            "![Alan Wake 2](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1086940/header.jpg)\n"
             "Over-the-shoulder tactical gunplay, inventory management grid, and psychological horror.\n\n"
             "2. **The Callisto Protocol** *(PS5, Xbox Series X|S, PC)*\n"
-            "![The Callisto Protocol](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1544020/header.jpg)\n"
             "Directed by Glen Schofield (creator of the original *Dead Space*), emphasizing visceral close-quarters combat.\n\n"
             "3. **Signalis** *(PC, Switch, PlayStation, Xbox — OpenCritic 82 Strong)*\n"
-            "![Signalis](https://shared.cloudflare.steamstatic.com/store_item_assets/steam/apps/1262350/header.jpg)\n"
             "Classic survival horror resource conservation, inventory puzzles, and cosmic dread."
         )
 
     if "ign" in msg_lower or "article" in msg_lower or "today" in msg_lower:
-        return f"Here are the latest indexed articles from our newsroom today:\n\n{recent_context}"
+        return f"Here are the latest live indexed articles from our newsroom:\n\n{recent_context}"
 
     return (
         "Hi! I'm **Pulsar**, your GamePulse concierge. I can help you with:\n"
-        "- ⚔️ **Game Recommendations**: Ask for the best games by genre (e.g. *'best RPG to play'*, *'games like Zelda or Diablo'*)\n"
+        f"- 🏎️ **Taste Mapping**: E.g. *'I like Forza Horizon, what else should I play?'*, *'Games like Resident Evil or Zelda'*\n"
+        f"- ⚔️ **Genre Bests**: Ask for *'best RPG to play this year'*\n"
         "- 🗓️ **Release Calendars**: Ask for *'new game releases this week'*\n"
         "- ⭐ **Critic Ratings**: Ask for *'games with 85+ OpenCritic score'*\n"
         "- 📰 **Live News**: Ask for *'articles from IGN today'*"
@@ -820,7 +804,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .github-svg { width: 16px; height: 16px; fill: currentColor; }
 
         /* ==========================================
-           PULSAR AI WIDGET + COVER ART CARDS
+           PULSAR AI WIDGET + GEMINI PILL BAR
            ========================================== */
         .pulsar-launcher-btn {
             position: fixed; bottom: 24px; right: 24px; z-index: 999;
@@ -993,7 +977,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="suggestion-chips-wrap">
                     <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
                     <button class="sugg-chip" onclick="sendPulsarPrompt('New game releases this week')">🗓️ New game releases</button>
-                    <button class="sugg-chip" onclick="sendPulsarPrompt('Find me something to play')">🎮 Find me something to play</button>
+                    <button class="sugg-chip" onclick="sendPulsarPrompt('I like Forza Horizon, what else should I play?')">🏎️ Racing Recommendations</button>
                 </div>
             </div>
         </div>
@@ -1001,7 +985,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div class="quick-actions-drawer" id="quickActionsDrawer">
             <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games rated 85+ on OpenCritic/Metacritic')">⭐ Verified 85+ Scores</button>
             <button class="quick-action-link" onclick="sendPulsarPrompt('What are the top exclusive games on PS5 and Switch 2?')">🎮 Platform Exclusives</button>
-            <button class="quick-action-link" onclick="sendPulsarPrompt('best RPG to play right now')">⚔️ Best RPG Recommendations</button>
+            <button class="quick-action-link" onclick="sendPulsarPrompt('best RPG to play this year')">⚔️ Best RPGs This Year</button>
         </div>
 
         <!-- Gemini-Styled Pill Box -->
@@ -1079,7 +1063,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="suggestion-chips-wrap">
                         <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
                         <button class="sugg-chip" onclick="sendPulsarPrompt('New game releases this week')">🗓️ New game releases</button>
-                        <button class="sugg-chip" onclick="sendPulsarPrompt('Find me something to play')">🎮 Find me something to play</button>
+                        <button class="sugg-chip" onclick="sendPulsarPrompt('I like Forza Horizon, what else should I play?')">🏎️ Racing Recommendations</button>
                     </div>
                 </div>
             `;
@@ -1176,7 +1160,7 @@ def render_card(row):
     title = row["ai_title"] or row["title"]
     source = row["source_name"] or "Editorial"
     source_url = row["source_url"] or "#"
-    created = row["created_at"][:10] if row["created_at"] else "Today"
+    published = row["published_at"] if row["published_at"] else (row["created_at"][:10] if row["created_at"] else "Recent")
     badge_class = get_badge_class(tag)
 
     image_html = ""
@@ -1196,7 +1180,7 @@ def render_card(row):
                     <span class="cat-badge {badge_class}">{tag}</span>
                 </div>
                 <div class="byline-meta">
-                    <span>Source: <strong>{source}</strong></span> • <span>{created}</span> • <span>2 min read</span>
+                    <span>Source: <strong>{source}</strong></span> • <span>{published}</span> • <span>2 min read</span>
                 </div>
             </div>
             <h2 class="article-headline">
@@ -1271,7 +1255,7 @@ class WebHandler(BaseHTTPRequestHandler):
             articles_html = "\n".join([render_card(r) for r in rows]) if rows else """
             <div style="text-align:center; padding: 80px 20px; color: #64748b;">
                 <h3>No stories in this section yet.</h3>
-                <p>Check back shortly as new review and industry feeds are aggregated.</p>
+                <p>Check back shortly as new live feeds are indexed.</p>
             </div>
             """
 
@@ -1296,6 +1280,7 @@ class WebHandler(BaseHTTPRequestHandler):
 
         self.send_response(404)
         self.end_headers()
+        self.wfile.write(b"Not Found")
 
     def log_message(self, format, *args):
         return
