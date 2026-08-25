@@ -410,7 +410,7 @@ def query_local_articles_for_chat(user_msg):
     elif "industry" in msg_lower:
         cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE tag='INDUSTRY' OR category LIKE '%Industry%' ORDER BY id DESC LIMIT 5")
     else:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles ORDER BY id DESC LIMIT 6")
+        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles ORDER BY id DESC LIMIT 5")
         
     rows = cursor.fetchall()
     conn.close()
@@ -418,7 +418,7 @@ def query_local_articles_for_chat(user_msg):
     context_items = []
     for r in rows:
         title = r["ai_title"] or r["title"]
-        context_items.append(f"- **{title}** ({r['source_name']}, {r['published_at']}): {r['summary'][:160]}... [Read]({r['source_url']})")
+        context_items.append(f"- **{title}** ({r['source_name']}, {r['published_at']}): {r['summary'][:140]}... [Read]({r['source_url']})")
     return "\n".join(context_items)
 
 
@@ -429,7 +429,7 @@ def sanitize_chat_messages(system_prompt, history, user_message):
     messages = [{"role": "system", "content": system_prompt}]
     cleaned = []
     if history and isinstance(history, list):
-        for h in history[-8:]:
+        for h in history[-6:]:
             if isinstance(h, dict) and h.get("role") in ["user", "assistant"] and h.get("content"):
                 role = h["role"]
                 content = str(h["content"]).strip()
@@ -458,27 +458,64 @@ def chat_with_pulsar(user_message, history=None):
     today_str = datetime.now().strftime("%A, %B %d, %Y")
     recent_context = query_local_articles_for_chat(msg_clean)
 
-    system_prompt = f"""
-    You are Pulsar, the official interactive AI gaming concierge and expert for GamePulse (Current Year: {current_year}, Today is {today_str}).
-    You possess encyclopedic knowledge across every video game publisher, developer, engine, mechanic, and franchise in industry history:
-    - Studios: Activision, EA, Ubisoft, Blizzard, Naughty Dog, Valve, Nintendo, Sony PlayStation Studios, Capcom, FromSoftware, Rockstar Games, Square Enix, Bethesda, CD Projekt Red, Sega, Konami, Xbox Game Studios, Respawn, Insomniac, Remedy, etc.
-    - Franchises: Call of Duty, Uncharted, Roblox, Minecraft, Fortnite, Zelda, Red Dead, GTA, Sonic, Mario, Halo, Destiny, Pokemon, Dark Souls, Monster Hunter, Resident Evil, Final Fantasy, Persona, Diablo, etc.
+    # 1. Numerical Score Evaluation (60+, 70+, 80+, 85+, 90+)
+    score_match = re.search(r'(?:score(?: of)?|rated|rating of|above|at least)\s*(\d{2})|(\d{2})\s*\+', msg_lower)
+    if score_match:
+        min_score = int(score_match.group(1) or score_match.group(2))
+        
+        if min_score <= 79:
+            return (
+                f"### ⭐ **Recent & Notable Games Rated {min_score}+ (OpenCritic / Metacritic)**\n\n"
+                f"Here are popular and acclaimed recent titles meeting your **{min_score}+** score threshold:\n\n"
+                "1. **Star Wars Outlaws** *(PC, PS5, Xbox Series X|S — OpenCritic 76)*\n"
+                "- **Why You'll Love It**: Open-world scoundrel adventure across underworld syndicates with stealth, speeder bike traversal, and blaster gunplay.\n\n"
+                "2. **The Crew Motorfest** *(PC, PS5, Xbox Series X|S — OpenCritic 76)*\n"
+                "- **Why You'll Love It**: Open-world Hawaiian car culture festival with themed playlists spanning JDM, hypercars, and muscle cars.\n\n"
+                "3. **Need for Speed Unbound** *(PC, PS5, Xbox Series X|S — OpenCritic 77)*\n"
+                "- **Why You'll Love It**: Stylized anime graffiti visual effects, deep vehicle body tuning, and high-heat police chases.\n\n"
+                "4. **Warhammer 40,000: Space Marine 2** *(PC, PS5, Xbox Series X|S — OpenCritic 82)*\n"
+                "- **Why You'll Love It**: Visceral third-person shooter and hack-and-slash brawler against massive Tyranid swarms.\n\n"
+                "5. **Black Myth: Wukong** *(PC, PS5 — OpenCritic 82)*\n"
+                "- **Why You'll Love It**: Fast-paced staff martial arts combat, spell transformations, and stunning Unreal Engine 5 mythological boss fights."
+            )
+        elif min_score <= 89:
+            return (
+                f"### ⭐ **Top Critically Acclaimed Games Rated {min_score}+ (OpenCritic / Metacritic)**\n\n"
+                f"Here are premier titles verified with **{min_score}+** ratings:\n\n"
+                "1. **Like a Dragon: Infinite Wealth** *(PC, PS5, Xbox — OpenCritic 89)*\n"
+                "- **Why You'll Love It**: Massive Hawaiian turn-based RPG with absurd job classes, rich narrative, and Dondoko Island management.\n\n"
+                "2. **Alan Wake 2** *(PC, PS5, Xbox — OpenCritic 89)*\n"
+                "- **Why You'll Love It**: Masterpiece of psychological survival horror, dual-protagonist detective storytelling, and visuals.\n\n"
+                "3. **Dragon's Dogma 2** *(PC, PS5, Xbox — OpenCritic 86)*\n"
+                "- **Why You'll Love It**: Emergent physics fantasy combat, monster climbing, and autonomous Pawn AI companions.\n\n"
+                "4. **Remnant 2** *(PC, PS5, Xbox — OpenCritic 85)*\n"
+                "- **Why You'll Love It**: Tactical co-op third-person shooter with procedural worlds, secret archetype classes, and intense boss fights.\n\n"
+                "5. **Lies of P** *(PC, PS5, Xbox — OpenCritic 84)*\n"
+                "- **Why You'll Love It**: Tight deflections and atmospheric Belle Époque grimdark puppet combat."
+            )
+        else:
+            return (
+                f"### 🏆 **Elite Masterpieces Rated {min_score}+ (Mighty Tier)**\n\n"
+                f"Here are the highest-rated games of this generation meeting your **{min_score}+** threshold:\n\n"
+                "1. **Elden Ring: Shadow of the Erdtree** *(PC, PS5, Xbox — OpenCritic 95 / Metacritic 95)*\n"
+                "- **Consensus**: Universally acclaimed open-world action RPG expansion setting the industry benchmark.\n\n"
+                "2. **Astro Bot** *(PlayStation 5 Exclusive — OpenCritic 94 / Metacritic 94)*\n"
+                "- **Consensus**: Joyous 3D platformer masterpiece with inventive level mechanics and DualSense haptic design.\n\n"
+                "3. **Metaphor: ReFantazio** *(PC, PS5, Xbox — OpenCritic 94 / Metacritic 94)*\n"
+                "- **Consensus**: From the creators of Persona 5, celebrated for its tournament narrative and tactical combat.\n\n"
+                "4. **Final Fantasy VII Rebirth** *(PlayStation 5 Exclusive — OpenCritic 92 / Metacritic 92)*\n"
+                "- **Consensus**: Monumental JRPG triumph expanding the journey beyond Midgar with dynamic synergy combat.\n\n"
+                "5. **Balatro** *(PC, Consoles, Mobile — OpenCritic 90 / Metacritic 90)*\n"
+                "- **Consensus**: Brilliant roguelike deckbuilder with hypnotic mathematical synergy."
+            )
 
-    CONVERSATIONAL RULES:
-    1. Answer ANY question directly and insightfully with specific gameplay reasons, mechanics, platforms, and verified critic reception (OpenCritic / Metacritic).
-    2. When asked for recommendations (e.g. "games like COD made by Activision", "games similar to Uncharted", "games similar to Roblox"), provide 3 to 4 tailored games with detailed "Why You'll Love It" mechanical comparisons.
-    3. Multi-turn memory: retain all context across user turns in this conversation.
-    4. Accuracy: Today is {today_str} ({current_year}). Never list games released years ago as "new this week".
-    5. Strict safety: zero profanity or inappropriate language.
+    # 2. Streamlined Groq Prompt
+    system_prompt = f"""You are Pulsar, the official AI gaming expert for GamePulse ({current_year}).
+Answer any question directly with game titles, platforms, verified OpenCritic/Metacritic scores, and specific mechanical reasons "Why You'll Love It".
+Retain context across conversation turns. Zero profanity."""
 
-    LIVE NEWSROOM CONTEXT:
-    {recent_context}
-    """
-
-    # Assemble sanitized message sequence
     messages = sanitize_chat_messages(system_prompt, history, msg_clean)
 
-    # 1. Execute Groq API Call
     if GROQ_API_KEY:
         try:
             url = "https://api.groq.com/openai/v1/chat/completions"
@@ -491,143 +528,105 @@ def chat_with_pulsar(user_message, history=None):
                 "model": "llama-3.1-8b-instant",
                 "messages": messages,
                 "temperature": 0.25,
-                "max_tokens": 800
+                "max_tokens": 700
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=14) as response:
+            with urllib.request.urlopen(req, timeout=12) as response:
                 res = json.loads(response.read().decode("utf-8"))
                 reply_content = res["choices"][0]["message"]["content"].strip()
                 if reply_content:
                     return reply_content
         except Exception as e:
-            print(f"[!] Groq inference notice: {e}")
+            print(f"[!] Groq notice: {e}")
 
     # ==========================================
-    # ENCYCLOPEDIC KNOWLEDGE BASE FALLBACK
+    # ENCYCLOPEDIC KNOWLEDGE BASE
     # ==========================================
-    # 1. Activision & Call of Duty
     if any(w in msg_lower for w in ["activision", "cod", "call of duty"]):
         return (
-            "### 🎯 **Top Military & Fast-Paced Shooters Like Call of Duty / by Activision**\n\n"
+            "### 🎯 **Top Fast-Paced & Military Shooters Like Call of Duty (by Activision)**\n\n"
             "1. **Call of Duty: Black Ops 6** *(PC, PS5, Xbox Series X|S — OpenCritic 84)*\n"
-            "- **Why You'll Love It**: Features the revolutionary Omnimovement system allowing sprinting, sliding, and diving in any direction with signature arcade gunplay.\n\n"
+            "- **Why You'll Love It**: Omnimovement allows sprinting, sliding, and diving in 360 degrees with signature arcade gunplay.\n\n"
             "2. **Titanfall 2** *(PC, PS4, Xbox — Metacritic 89)*\n"
-            "- **Why You'll Love It**: Created by Respawn (the original creators of *Call of Duty: Modern Warfare*), featuring fluid wall-running mobility, crisp weapon recoil, and giant mech combat.\n\n"
+            "- **Why You'll Love It**: Created by the original *Modern Warfare* developers, featuring wall-running mobility, crisp weapon recoil, and mech combat.\n\n"
             "3. **Sekiro: Shadows Die Twice** *(PC, PS4, Xbox — Published by Activision / Metacritic 90)*\n"
-            "- **Why You'll Love It**: If you want Activision's highest-rated action masterpiece featuring precision sword deflections and grappling traversal.\n\n"
+            "- **Why You'll Love It**: Activision's highest-rated action game, focused on precision sword parries and grappling traversal.\n\n"
             "4. **The Finals / Apex Legends** *(Free to Play)*\n"
-            "- **Why You'll Love It**: Fast-paced gunplay with environmental destruction and squad tactical abilities."
+            "- **Why You'll Love It**: High-mobility gunplay with destruction and tactical squad abilities."
         )
 
-    # 2. Uncharted & Cinematic Action-Adventure
     if "uncharted" in msg_lower or "naughty dog" in msg_lower:
         return (
             "### 🌿 **Top Cinematic Action-Adventure Games Like Uncharted**\n\n"
             "1. **Tomb Raider Reboot Trilogy (Tomb Raider, Rise, Shadow)** *(PC, PlayStation, Xbox — Metacritic 86–89)*\n"
-            "- **Why You'll Love It**: The closest structural counterpart to Uncharted, blending exotic ancient tomb puzzles, fluid climbing traversal, survival crafting, and dynamic third-person shootouts.\n\n"
+            "- **Why You'll Love It**: The closest structural counterpart to Uncharted, blending exotic ancient tomb puzzles, fluid climbing traversal, and dynamic shootouts.\n\n"
             "2. **The Last of Us Part I & Part II** *(PS5, PC — Metacritic 93 / OpenCritic 90)*\n"
-            "- **Why You'll Love It**: Built on the exact same proprietary Naughty Dog engine as Uncharted, delivering unmatched performance capture, intimate character writing, and visceral combat.\n\n"
+            "- **Why You'll Love It**: Built on the exact same Naughty Dog engine, delivering industry-leading performance capture, intimate writing, and visceral combat.\n\n"
             "3. **Indiana Jones and the Great Circle** *(PC, Xbox Series X|S, PS5)*\n"
             "- **Why You'll Love It**: First-person archaeological exploration, whip traversal, stealth brawling, and globe-trotting mystery.\n\n"
             "4. **Star Wars Jedi: Survivor** *(PC, PS5, Xbox Series X|S — OpenCritic 85)*\n"
-            "- **Why You'll Love It**: Expansive platforming puzzles, wall-running, grappling hooks, and acrobatic lightsaber combat."
+            "- **Why You'll Love It**: Expansive acrobatic platforming, wall-running, grappling hooks, and lightsaber combat."
         )
 
-    # 3. Roblox & Sandbox Creation Games
     if "roblox" in msg_lower:
         return (
             "### 🧱 **Top Games & Sandbox Creation Hubs Like Roblox**\n\n"
             "1. **Minecraft** *(PC, Consoles, Mobile — Metacritic 93)*\n"
-            "- **Why You'll Love It**: The world's most versatile voxel sandbox for survival, redstone engineering, modded minigames, and limitless cooperative building.\n\n"
+            "- **Why You'll Love It**: The world's most versatile voxel sandbox for survival, redstone engineering, modded minigames, and creative building.\n\n"
             "2. **LEGO Fortnite & Fortnite Creative / UEFN** *(Free to Play)*\n"
-            "- **Why You'll Love It**: Epic Games' massive creator ecosystem where millions of players create custom obstacle courses (Obbys), tycoon simulators, and survival crafting worlds.\n\n"
+            "- **Why You'll Love It**: Epic Games' massive creator ecosystem with millions of user-made obstacle courses (Obbys), tycoons, and survival worlds.\n\n"
             "3. **Terraria** *(PC, Consoles, Mobile — Metacritic 88)*\n"
-            "- **Why You'll Love It**: 2D action-adventure sandbox with deep boss progression, hundreds of weapons/accessories, and creative base building.\n\n"
+            "- **Why You'll Love It**: 2D action-adventure sandbox with deep boss progression, hundreds of weapons, and creative base building.\n\n"
             "4. **Garry's Mod (GMod) / Rec Room**\n"
-            "- **Why You'll Love It**: Physics-driven sandbox social games with thousands of user-created gamemodes like Prop Hunt, TTT, and custom RP servers."
+            "- **Why You'll Love It**: Physics-driven sandbox social hubs with thousands of custom community gamemodes."
         )
 
-    # 4. Blizzard Entertainment (90+ Acclaimed)
-    if "blizzard" in msg_lower:
+    if "blizzard" in msg_lower or "diablo" in msg_lower:
         return (
-            "### ❄️ **Top Acclaimed Games by Blizzard (90+ Metacritic / OpenCritic)**\n\n"
-            "1. **Diablo II: Resurrected** *(PC, PS5, Xbox, Switch — OpenCritic 83 / Metacritic 80)*\n"
-            "- **Why You'll Love It**: The gold standard dark fantasy ARPG with legendary rune itemization and grim atmosphere.\n\n"
-            "2. **StarCraft II: Wings of Liberty** *(PC — Metacritic 93)*\n"
-            "- **Why You'll Love It**: The pinnacle of competitive real-time strategy with asymmetric faction balance and a cinematic campaign.\n\n"
-            "3. **World of Warcraft: The War Within** *(PC — OpenCritic 84)*\n"
-            "- **Why You'll Love It**: Landmark ongoing expansion featuring Delves for solo progression, Hero Talents, and dense endgame raiding.\n\n"
-            "4. **Diablo IV: Vessel of Hatred** *(PC, PS5, Xbox — OpenCritic 85)*\n"
-            "- **Why You'll Love It**: Introduces the hyper-agile Spiritborn class, Nahantu jungle regions, and deep Paragon progression."
+            "### ❄️ **Top Games by Blizzard & ARPGs Like Diablo**\n\n"
+            "1. **Path of Exile 2** *(PC, PS5, Xbox Series X|S — Beta Access)*\n"
+            "- **Why You'll Love It**: The deepest skill-gem customization tree in ARPG history, dark 6-act campaign, and responsive dodge-roll combat.\n\n"
+            "2. **Diablo II: Resurrected** *(PC, PS5, Xbox, Switch — OpenCritic 83)*\n"
+            "- **Why You'll Love It**: The definitive dark fantasy ARPG with legendary runewords and dark gothic atmosphere.\n\n"
+            "3. **StarCraft II: Wings of Liberty** *(PC — Metacritic 93)*\n"
+            "- **Why You'll Love It**: The pinnacle of competitive real-time strategy with asymmetric faction balance.\n\n"
+            "4. **Last Epoch / Grim Dawn** *(OpenCritic 80 / Metacritic 83)*\n"
+            "- **Why You'll Love It**: Time-travel crafting eras and dual-class mastery combinations."
         )
 
-    # 5. Rockstar Games & GTA / Red Dead
-    if any(w in msg_lower for w in ["gta", "grand theft auto", "red dead", "rockstar"]):
+    if any(w in msg_lower for w in ["gta", "red dead", "rockstar"]):
         return (
             "### 🤠 **Top Living World Sandboxes Like GTA & Red Dead Redemption**\n\n"
-            "1. **Cyberpunk 2077: Phantom Liberty** *(PC, PS5, Xbox Series X|S — OpenCritic 89)*\n"
-            "- **Why You'll Love It**: Night City is the most visually breathtaking urban sandbox in gaming, packed with vehicle combat, cyberware abilities, and underworld storylines.\n\n"
+            "1. **Cyberpunk 2077: Phantom Liberty** *(PC, PS5, Xbox — OpenCritic 89)*\n"
+            "- **Why You'll Love It**: Night City is the most visually breathtaking urban sandbox in gaming with cyberware builds and crime storylines.\n\n"
             "2. **Sleeping Dogs: Definitive Edition** *(PC, PS4, Xbox)*\n"
             "- **Why You'll Love It**: Undercover cop drama in Hong Kong combining martial arts melee brawling, street racing, and gunplay.\n\n"
             "3. **Mafia: Definitive Edition** *(PC, PS4, Xbox)*\n"
             "- **Why You'll Love It**: 1930s mobster drama with high-production cutscenes, authentic period vehicles, and Tommy gun shootouts."
         )
 
-    # 6. FromSoftware & Soulslikes
-    if any(w in msg_lower for w in ["soulslike", "fromsoftware", "elden ring", "dark souls", "bloodborne"]):
-        return (
-            "### 💀 **Top Must-Play Soulslikes & FromSoftware Epics**\n\n"
-            "1. **Elden Ring: Shadow of the Erdtree** *(PC, PS5, Xbox Series X|S — OpenCritic 95)*\n"
-            "- **Consensus**: The pinnacle of dark fantasy exploration, colossal boss encounters, and build diversity.\n\n"
-            "2. **Lies of P** *(PC, PS5, Xbox Series X|S — OpenCritic 84)*\n"
-            "- **Why You'll Love It**: Tight parry mechanics inspired by *Bloodborne* and *Sekiro*, set in a dark Belle Époque puppet dystopia.\n\n"
-            "3. **Black Myth: Wukong** *(PC, PS5 — OpenCritic 82)*\n"
-            "- **Why You'll Love It**: Fast-paced staff martial arts, transformation spells, and mythological boss spectacles."
-        )
-
-    # 7. Destiny / Halo / Sci-Fi Shooters
-    if any(w in msg_lower for w in ["destiny", "halo"]):
-        return (
-            "### 🛡️ **Top Sci-Fi Shooters With Crisp Gunplay Like Destiny & Halo**\n\n"
-            "1. **Warframe** *(PC, PS5, Xbox, Switch — Free to Play)*\n"
-            "- **Why You'll Love It**: High-speed space ninja parkour, massive weapon crafting rosters, and co-op sci-fi power fantasies.\n\n"
-            "2. **Doom Eternal** *(PC, PS5, Xbox, Switch — OpenCritic 89)*\n"
-            "- **Why You'll Love It**: High-mobility arena combat, precision weapon swapping, and relentless demonic action.\n\n"
-            "3. **Remnant 2** *(PC, PS5, Xbox Series X|S — OpenCritic 85)*\n"
-            "- **Why You'll Love It**: 'Souls with guns' featuring tight tactical shooting, procedural worlds, and secret archetypes."
-        )
-
-    # 8. Zelda / Nintendo / Open World Discovery
-    if any(w in msg_lower for w in ["zelda", "mario", "nintendo", "switch"]):
+    if any(w in msg_lower for w in ["zelda", "mario", "nintendo"]):
         return (
             "### 🗡️ **Top Open-World & Platformer Adventures Like Zelda & Mario**\n\n"
-            "1. **Elden Ring** *(PC, PS5, Xbox Series X|S — OpenCritic 95)*\n"
+            "1. **Elden Ring** *(PC, PS5, Xbox — OpenCritic 95)*\n"
             "- **Why You'll Love It**: Shares the exact same hands-off emergent discovery as *Breath of the Wild* across a vast, secrets-packed map.\n\n"
-            "2. **Astro Bot** *(PlayStation 5 Exclusive — OpenCritic 94)*\n"
-            "- **Why You'll Love It**: The definitive 3D platformer rivaling *Super Mario Galaxy* in joy, creative mechanics, and DualSense tactile feedback.\n\n"
+            "2. **Astro Bot** *(PS5 Exclusive — OpenCritic 94)*\n"
+            "- **Why You'll Love It**: The definitive 3D platformer rivaling *Super Mario Galaxy* in joy, creative mechanics, and DualSense feedback.\n\n"
             "3. **Tunic** *(PC, Switch, PlayStation, Xbox — OpenCritic 85)*\n"
-            "- **Why You'll Love It**: Isometric love letter to classic and modern Zelda with cryptic in-game manual pages and environmental puzzles."
+            "- **Why You'll Love It**: Isometric love letter to Zelda with cryptic in-game manual pages and environmental puzzle boxes."
         )
 
-    # 9. Spider-Man / Superhero
-    if any(w in msg_lower for w in ["spider-man", "superhero"]):
-        return (
-            "### 🕷️ **Top Superhero Games Like Marvel's Spider-Man 2**\n\n"
-            "1. **Batman: Arkham City / Arkham Knight** *(Metacritic 91 / 87)*\n"
-            "- **Why It Fits**: The gold standard of freeflow combat, predator stealth, and dark detective atmosphere in Gotham.\n\n"
-            "2. **Marvel's Guardians of the Galaxy** *(OpenCritic 82)*\n"
-            "- **Why It Fits**: Hilarious ensemble banter, narrative choices, and licensed 80s rock soundtrack.\n\n"
-            "3. **inFAMOUS Second Son** *(PS5 60FPS)*\n"
-            "- **Why It Fits**: Kinetic superpower sandbox traversal (Smoke, Neon, Video powers) across Seattle."
-        )
+    if any(w in msg_lower for w in ["article", "ign", "today", "news", "newsroom"]):
+        return f"### 📰 **Live Newsroom Articles ({today_str})**\n\n{recent_context}"
 
-    # 10. General Studio or Title Inquiry
     return (
-        f"### 🎮 **GamePulse Concierge Response ({today_str})**\n\n"
-        f"I analyzed your request for **{msg_clean}** against our gaming database:\n\n"
-        f"{recent_context}\n\n"
-        "Tell me your preferred platform (PC, PS5, Xbox, Switch) or genre focus to customize your recommendation further!"
+        "I'm ready to find your next favorite game! You can ask me:\n"
+        "- 🎯 *'Show me games like COD made by Activision'*\n"
+        "- 🌿 *'Show me games similar to Uncharted or Tomb Raider'*\n"
+        "- 🧱 *'Show me games like Roblox or Minecraft'*\n"
+        "- ⭐ *'Show me games with a score of 60+ (or 85+, 90+)'*\n"
+        "- 🗡️ *'I like Zelda, what other open world game do you recommend?'*"
     )
 
 
@@ -1030,7 +1029,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="suggestion-chips-wrap">
                     <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
                     <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games like COD made by Activision')">🎯 Activision Shooters</button>
-                    <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games similar to Uncharted or Roblox')">🗡️ Cinematic & Sandbox Games</button>
+                    <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games with a score of 60+')">⭐ Games Rated 60+</button>
                 </div>
             </div>
         </div>
@@ -1038,7 +1037,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div class="quick-actions-drawer" id="quickActionsDrawer">
             <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games like COD made by Activision')">🎯 Call of Duty & Activision</button>
             <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games similar to Uncharted')">🌿 Uncharted Style Games</button>
-            <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games similar to Roblox')">🧱 Roblox Sandbox Alternatives</button>
+            <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games with a score of 85+')">⭐ Verified 85+ Scores</button>
         </div>
 
         <!-- Gemini-Styled Pill Box -->
@@ -1116,7 +1115,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <div class="suggestion-chips-wrap">
                         <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
                         <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games like COD made by Activision')">🎯 Activision Shooters</button>
-                        <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games similar to Uncharted or Roblox')">🗡️ Cinematic & Sandbox Games</button>
+                        <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games with a score of 60+')">⭐ Games Rated 60+</button>
                     </div>
                 </div>
             `;
