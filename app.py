@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 GamePulse - Video Game News, Reviews & Editorial Digest
-100% Live Ingestion • Real-Time Database Grounded AI • Zero Hardcoded Fallbacks
-100% Python Standard Library (Zero External Dependencies)
+Fully Dynamic Pulsar AI Gaming Concierge • Multi-Turn Memory • 100% Live Ingestion
+Zero External Dependencies (Pure Python Standard Library)
 """
 
 import os
@@ -37,7 +37,7 @@ if os.path.exists(env_path):
 PORT = int(os.environ.get("PORT", 8080))
 DB_FILE = os.environ.get("DB_FILE", "gaming_news.db")
 REFRESH_INTERVAL_MINUTES = int(os.environ.get("REFRESH_MINUTES", 15))
-MAX_ARTICLE_AGE_DAYS = 14  # Strict filter: Discard any article older than 14 days
+MAX_ARTICLE_AGE_DAYS = 14  # Discard articles older than 14 days
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip().strip("'\"")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
@@ -98,7 +98,7 @@ def init_db():
             )
         """)
         
-        # Purge any legacy test rows
+        # Purge legacy mock rows
         conn.execute("""
             DELETE FROM articles WHERE 
             source_url LIKE '%ign.com/articles/astro-bot%' OR 
@@ -380,35 +380,33 @@ def synthesize_article(raw_item):
 # ==========================================
 # OPENCRITIC LIVE API VERIFICATION ENGINE
 # ==========================================
-def fetch_opencritic_score(game_title):
+def fetch_recent_games_by_score(min_score=85, limit=6):
+    results = []
     try:
-        query = urllib.parse.quote(game_title.strip())
-        url = f"https://api.opencritic.com/api/game/search?criteria={query}"
+        url = "https://api.opencritic.com/api/game/popular"
         req = urllib.request.Request(url, headers={"User-Agent": DEFAULT_UA})
-        with urllib.request.urlopen(req, timeout=3) as resp:
+        with urllib.request.urlopen(req, timeout=4) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            if data and isinstance(data, list) and len(data) > 0:
-                best = data[0]
-                game_id = best.get("id")
-                if game_id:
-                    detail_url = f"https://api.opencritic.com/api/game/{game_id}"
-                    req_detail = urllib.request.Request(detail_url, headers={"User-Agent": DEFAULT_UA})
-                    with urllib.request.urlopen(req_detail, timeout=3) as resp_detail:
-                        det = json.loads(resp_detail.read().decode("utf-8"))
-                        score = det.get("topCriticScore", -1)
-                        tier = det.get("tierName", "Unrated")
-                        rec = det.get("percentRecommended", 0)
-                        if score and score > 0:
-                            return {
-                                "title": det.get("name", game_title),
-                                "score": round(score),
-                                "tier": tier,
-                                "percent_recommended": round(rec) if rec else None,
-                                "url": f"https://opencritic.com/game/{game_id}/{det.get('name', '').lower().replace(' ', '-')}"
-                            }
+            if data and isinstance(data, list):
+                matches = [g for g in data if g.get("topCriticScore", 0) and g.get("topCriticScore", 0) >= min_score]
+                matches.sort(key=lambda x: str(x.get("firstReleaseDate", "")) or "", reverse=True)
+                for g in matches[:limit]:
+                    score = round(g.get("topCriticScore", 0))
+                    tier = g.get("tierName", "Rated")
+                    name = g.get("name", "")
+                    game_id = g.get("id")
+                    rel_date = str(g.get("firstReleaseDate", ""))[:10]
+                    link = f"https://opencritic.com/game/{game_id}/{name.lower().replace(' ', '-')}"
+                    results.append({
+                        "name": name,
+                        "score": score,
+                        "tier": tier,
+                        "release_date": rel_date,
+                        "url": link
+                    })
     except Exception:
         pass
-    return None
+    return results
 
 def query_local_articles_for_chat(user_msg):
     conn = get_db()
@@ -438,7 +436,7 @@ def query_local_articles_for_chat(user_msg):
 
 
 # ==========================================
-# MULTI-TURN MEMORY PULSAR AI CONCIERGE
+# FULL DYNAMIC PULSAR AI GAMING CONCIERGE
 # ==========================================
 def chat_with_pulsar(user_message, history=None):
     msg_lower = user_message.lower().strip()
@@ -446,23 +444,35 @@ def chat_with_pulsar(user_message, history=None):
     today_str = datetime.now().strftime("%A, %B %d, %Y")
     recent_context = query_local_articles_for_chat(user_message)
 
-    system_prompt = f"""
-    You are Pulsar, the official interactive AI gaming concierge and assistant for GamePulse (Current Year: {current_year}, Today: {today_str}).
+    # 1. Dedicated live score threshold handling (e.g. 65+, 75+, 85+, 90+)
+    score_match = re.search(r'(\d{2})\s*\+|(?:rated|score|above|at least)\s*(\d{2})', msg_lower)
+    if score_match:
+        min_score = int(score_match.group(1) or score_match.group(2))
+        recent_games = fetch_recent_games_by_score(min_score=min_score, limit=6)
+        
+        if recent_games:
+            items_str = "\n\n".join([
+                f"{i+1}. **{g['name']}** — **OpenCritic {g['score']}** *({g['tier']} Tier)*\n"
+                f"- **Release Date**: {g['release_date'] if g['release_date'] else 'Recent'} | [View Review Breakdown]({g['url']})"
+                for i, g in enumerate(recent_games)
+            ])
+            return f"### ⭐ **Recent & Notable Games Rated {min_score}+ (OpenCritic / Metacritic)**\n\nHere are recently reviewed titles meeting your **{min_score}+** score threshold, sorted by recency:\n\n{items_str}"
 
-    CRITICAL REASONING & FACTUAL ACCURACY RULES:
-    1. TEMPORAL ACCURACY & GROUNDING:
-       - Today is {today_str}. The current year is {current_year}.
-       - When asked about 'new game releases this week' or 'new games', report directly on current launches and announcements from the live database articles context provided below.
-       - NEVER list games released in previous years (like 2024 or 2023) as 'this week's releases'.
-       - When recommending RPGs or action games from '{current_year}', ensure all titles are verified {current_year} releases.
-    2. CONVERSATIONAL TASTE MAPPING:
-       - Respond conversationally when users mention franchises (e.g. Forza Horizon, Diablo, Resident Evil). Explain how recommended games compare mechanically (e.g. open-world festival vs simulation vs arcade).
-    3. MULTI-TURN MEMORY:
-       - Maintain memory of platforms and genres mentioned by the user in previous turns.
-    4. ZERO HALLUCINATED SCORES:
-       - Only cite verified scores or describe critical consensus qualitatively.
-    5. STRICT SAFETY:
-       - Never use profanity, vulgarity, or inappropriate language.
+    # 2. Comprehensive Dynamic AI System Prompt
+    system_prompt = f"""
+    You are Pulsar, the official interactive AI gaming concierge and assistant for GamePulse (Current Year: {current_year}, Today is {today_str}).
+    You are a deeply passionate, encyclopedic, and articulate gaming expert who understands game mechanics, design philosophy, platform ecosystems, and critical consensus across every major genre and franchise.
+
+    CONVERSATIONAL TASTE MAPPING & RECOMMENDATION INSTRUCTIONS:
+    - When a user mentions ANY game or franchise they like (e.g., Zelda, Red Dead Redemption, GTA, Sonic, Mario, Forza, Diablo, Resident Evil, Dark Souls, Cyberpunk, Monster Hunter, Persona, Halo, etc.), deeply analyze WHY that game is appealing (e.g., emergent physics, living world immersion, mobility sandbox, momentum platforming, precision combat, build crafting).
+    - If the user asks for a specific criterion (e.g., "what other game would you recommend for me that's open world?", "something on Switch", "something fast-paced"), strictly honor their request.
+    - Structure your recommendations clearly:
+      * Recommend 3 to 4 tailored titles.
+      * For each title, state the **Platforms** and **Verified Critic Reception** (OpenCritic/Metacritic).
+      * Provide a detailed **"Why You'll Love It"** explanation comparing specific gameplay mechanics and world design to the game the user mentioned.
+    - MULTI-TURN MEMORY: You have access to previous turns in the conversation. Retain user preferences and platforms mentioned earlier in the session.
+    - FACTUAL ACCURACY: Today is {today_str} in {current_year}. Never invent numerical review scores or speculative release dates.
+    - STRICT SAFETY: Never use profanity, vulgarity, slurs, or inappropriate language.
 
     LIVE DATABASE ARTICLES TODAY:
     {recent_context}
@@ -491,7 +501,7 @@ def chat_with_pulsar(user_message, history=None):
                 "model": "llama-3.1-8b-instant",
                 "messages": clean_messages,
                 "temperature": 0.25,
-                "max_tokens": 700
+                "max_tokens": 750
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
@@ -501,11 +511,11 @@ def chat_with_pulsar(user_message, history=None):
                 if reply_content:
                     return reply_content
         except Exception as e:
-            print(f"[!] Groq call note: {e}")
+            print(f"[!] Groq inference note: {e}")
 
-    # Pure Live Database Grounded Fallback (Zero Hardcoded Game Lists)
+    # Pure Live Database Grounded Fallback
     return (
-        f"### 🎮 **Latest Live Reporting & Newsroom Context**\n\n"
+        f"### 🎮 **Live Newsroom Reporting ({today_str})**\n\n"
         f"Here are the latest verified game announcements, releases, and reviews from our live newsroom:\n\n"
         f"{recent_context}\n\n"
         "What specific genre or platform would you like to explore?"
@@ -769,8 +779,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .pulsar-profile { display: flex; align-items: center; gap: 10px; }
         .pulsar-avatar { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, #ef4444, #8b5cf6); display: flex; align-items: center; justify-content: center; font-size: 1.1rem; }
         .pulsar-title-wrap h3 { font-size: 0.95rem; font-weight: 800; color: #fff; margin-bottom: 2px; }
-        .pulsar-status { font-size: 0.72rem; color: #4ade80; display: flex; align-items: center; gap: 5px; }
-        .pulsar-status-dot { width: 6px; height: 6px; background: #4ade80; border-radius: 50%; display: inline-block; box-shadow: 0 0 6px #4ade80; }
+        .pulsar-subtitle { font-size: 0.74rem; color: #94a3b8; }
 
         .pulsar-controls { display: flex; align-items: center; gap: 6px; }
         .pulsar-ctrl-btn { background: transparent; border: none; color: #94a3b8; font-size: 1.1rem; cursor: pointer; padding: 4px; line-height: 1; }
@@ -898,7 +907,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <div class="pulsar-avatar">🎮</div>
                 <div class="pulsar-title-wrap">
                     <h3>Pulsar AI</h3>
-                    <div class="pulsar-status"><span class="pulsar-status-dot"></span> Fact-Verified Concierge</div>
+                    <div class="pulsar-subtitle">GamePulse Assistant</div>
                 </div>
             </div>
             <div class="pulsar-controls">
@@ -911,8 +920,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <p><strong>Hi! What do you want to do today?</strong></p>
                 <div class="suggestion-chips-wrap">
                     <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
-                    <button class="sugg-chip" onclick="sendPulsarPrompt('New game releases this week')">🗓️ New game releases</button>
-                    <button class="sugg-chip" onclick="sendPulsarPrompt('I like Forza Horizon, what else should I play?')">🏎️ Racing Recommendations</button>
+                    <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games rated 85+ on OpenCritic/Metacritic')">⭐ Verified 85+ Scores</button>
+                    <button class="sugg-chip" onclick="sendPulsarPrompt('I like Zelda, what other open world game do you recommend?')">🗡️ Open World Recommendations</button>
                 </div>
             </div>
         </div>
@@ -920,7 +929,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div class="quick-actions-drawer" id="quickActionsDrawer">
             <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games rated 85+ on OpenCritic/Metacritic')">⭐ Verified 85+ Scores</button>
             <button class="quick-action-link" onclick="sendPulsarPrompt('What are the top exclusive games on PS5 and Switch 2?')">🎮 Platform Exclusives</button>
-            <button class="quick-action-link" onclick="sendPulsarPrompt('best RPG to play this year')">⚔️ Best RPGs This Year</button>
+            <button class="quick-action-link" onclick="sendPulsarPrompt('I like Red Dead Redemption and GTA, what should I play next?')">🤠 Open World Sandboxes</button>
         </div>
 
         <!-- Gemini-Styled Pill Box -->
@@ -997,8 +1006,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <p><strong>Hi! What do you want to do today?</strong></p>
                     <div class="suggestion-chips-wrap">
                         <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
-                        <button class="sugg-chip" onclick="sendPulsarPrompt('New game releases this week')">🗓️ New game releases</button>
-                        <button class="sugg-chip" onclick="sendPulsarPrompt('I like Forza Horizon, what else should I play?')">🏎️ Racing Recommendations</button>
+                        <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games rated 85+ on OpenCritic/Metacritic')">⭐ Verified 85+ Scores</button>
+                        <button class="sugg-chip" onclick="sendPulsarPrompt('I like Zelda, what other open world game do you recommend?')">🗡️ Open World Recommendations</button>
                     </div>
                 </div>
             `;
