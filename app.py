@@ -28,7 +28,9 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 CURRENT_YEAR = datetime.datetime.now(datetime.timezone.utc).year
 CURRENT_DATE = datetime.datetime.now(datetime.timezone.utc).date()
 SESSION_TTL_SECONDS = 2 * 60 * 60
+MEMORY_TTL_SECONDS = 365 * 24 * 60 * 60
 MAX_CHAT_HISTORY = 24
+MAX_MEMORY_ITEMS = 40
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 METACRITIC_CACHE_TTL = 15 * 60
 BROWSE_CACHE_TTL = 15 * 60
@@ -69,12 +71,12 @@ STOP_WORDS = {
 # it is live. This prevents stale scores from being presented as current fact.
 GAME_LOOKUP_REGISTRY = {
     "ace combat 8": {
-        "title": "Ace Combat 8: Wings of Theve",
+        "title": "Ace Combat 8: Wings of the Brave",
         "aliases": [
             "ace combat 8",
-            "ace combat 8 wings of theve",
             "ace combat 8 wings of the brave",
-            "ace combat 8 wings of theve",
+            "ace combat 8 wings of the brave",
+            "ace combat 8 wings of the brave",
         ],
         "year": 2026,
         "release_date": "2026-10-02",
@@ -136,7 +138,7 @@ CURRENT_YEAR_FALLBACK = [
         "release_date": "2026-03-05",
     },
     {
-        "title": "Ace Combat 8: Wings of Theve",
+        "title": "Ace Combat 8: Wings of the Brave",
         "year": 2026,
         "score": 87,
         "meta_url": "https://www.metacritic.com/game/ace-combat-8-wings-of-theve/",
@@ -495,6 +497,197 @@ def merge_session_history(state, supplied_history):
         if cleaned:
             history[:] = cleaned
     return history[-MAX_CHAT_HISTORY:]
+
+
+DEFAULT_MEMORY = {
+    "favorite_games": [],
+    "liked_games": [],
+    "disliked_games": [],
+    "favorite_genres": [],
+    "platforms": [],
+    "play_styles": [],
+    "preferences": [],
+    "notes": [],
+}
+
+
+def normalize_memory_item(value):
+    value = re.sub(r"\s+", " ", str(value or "").strip(" .,!?:;\"'"))
+    value = re.sub(r"^(that|this)\s+", "", value, flags=re.I)
+    if len(value) > 140:
+        value = value[:137].rstrip() + "..."
+    return value
+
+
+def normalize_memory(memory):
+    out = {k: [] for k in DEFAULT_MEMORY}
+    if isinstance(memory, dict):
+        for key in out:
+            vals = memory.get(key, [])
+            if isinstance(vals, list):
+                seen = set()
+                for value in vals:
+                    item = normalize_memory_item(value)
+                    if item and item.lower() not in seen:
+                        seen.add(item.lower())
+                        out[key].append(item)
+                out[key] = out[key][:MAX_MEMORY_ITEMS]
+    return out
+
+
+def load_user_memory(user_id):
+    user_id = str(user_id or "").strip()
+    memory = normalize_memory(None)
+    if not user_id:
+        return memory
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT memory_json, updated_at FROM user_memory WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if row:
+            try:
+                if time.time() - float(row[1]) <= MEMORY_TTL_SECONDS:
+                    memory = normalize_memory(json.loads(row[0]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+    return memory
+
+
+def save_user_memory(user_id, memory):
+    user_id = str(user_id or "").strip()
+    if not user_id:
+        return
+    memory = normalize_memory(memory)
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO user_memory (user_id, memory_json, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                memory_json=excluded.memory_json,
+                updated_at=excluded.updated_at
+        """, (user_id, json.dumps(memory, ensure_ascii=False), time.time()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def add_memory_item(memory, bucket, value):
+    value = normalize_memory_item(value)
+    if not value or bucket not in memory:
+        return False
+    existing = {x.lower() for x in memory[bucket]}
+    if value.lower() in existing:
+        return False
+    memory[bucket].append(value)
+    memory[bucket] = memory[bucket][-MAX_MEMORY_ITEMS:]
+    return True
+
+
+def remove_memory_matches(memory, needle):
+    needle = normalize_memory_item(needle).lower()
+    if not needle:
+        return 0
+    removed = 0
+    for bucket, values in memory.items():
+        kept = []
+        for value in values:
+            if needle in value.lower() or value.lower() in needle:
+                removed += 1
+            else:
+                kept.append(value)
+        memory[bucket] = kept
+    return removed
+
+
+def extract_memory_update(message, memory):
+    """Infer useful gaming preferences, while allowing explicit remember/forget commands."""
+    text = re.sub(r"\s+", " ", str(message or "").strip())
+    lower = text.lower()
+    changed = []
+
+    if re.search(r"\b(?:forget|delete|remove)\s+(?:that|this|the)?\s*(?:from memory\s*)?everything\b", lower):
+        cleared = any(memory.values())
+        for key in memory:
+            memory[key] = []
+        return memory, ("cleared" if cleared else "none")
+
+    forget = re.search(r"\b(?:forget|delete|remove)(?:\s+that)?\s+(.+?)(?:\s+from memory)?$", text, re.I)
+    if forget:
+        removed = remove_memory_matches(memory, forget.group(1))
+        return memory, (f"removed:{removed}" if removed else "none")
+
+    explicit = re.search(r"\bremember(?:\s+that|\s+this)?\s+(.+)$", text, re.I)
+    if explicit:
+        if add_memory_item(memory, "notes", explicit.group(1)):
+            changed.append("note")
+
+    fav_game = re.search(r"\bmy favorite game(?: is| is currently| right now is)?\s+(.+)$", text, re.I)
+    if fav_game:
+        if add_memory_item(memory, "favorite_games", fav_game.group(1)):
+            changed.append("favorite game")
+
+    likes = re.search(r"\b(?:i|i'm|im)\s+(?:really\s+)?(?:like|love|enjoy|am into)\s+(.+)$", text, re.I)
+    if likes and "don't" not in likes.group(0).lower() and "do not" not in likes.group(0).lower():
+        if add_memory_item(memory, "liked_games", likes.group(1)):
+            changed.append("like")
+
+    dislikes = re.search(r"\b(?:i\s+)?(?:don't|do not|never)\s+(?:really\s+)?(?:like|enjoy|want)\s+(.+)$", text, re.I)
+    if dislikes and add_memory_item(memory, "disliked_games", dislikes.group(1)):
+        changed.append("dislike")
+    hates = re.search(r"\b(?:i|i'm|im)\s+(?:really\s+)?hate\s+(.+)$", text, re.I)
+    if hates and add_memory_item(memory, "disliked_games", hates.group(1)):
+        changed.append("dislike")
+
+    platform = re.search(r"\b(?:i\s+(?:mostly\s+)?play on|i\s+(?:mostly\s+)?play on|my\s+(?:main\s+)?platform is|i use)\s+(pc|ps5|ps4|xbox|switch|steam deck|mobile)\b", text, re.I)
+    if platform and add_memory_item(memory, "platforms", platform.group(1).upper() if platform.group(1).lower() != "steam deck" else "Steam Deck"):
+        changed.append("platform")
+
+    prefer = re.search(r"\b(?:i\s+)?prefer\s+(.+)$", text, re.I)
+    if prefer and add_memory_item(memory, "preferences", prefer.group(1)):
+        changed.append("preference")
+
+    genre_terms = [
+        "rpg", "jrpg", "action", "adventure", "horror", "soulslike", "shooter", "strategy",
+        "simulation", "sim", "platformer", "racing", "fighting", "cozy", "roguelike", "roguelite",
+        "metroidvania", "stealth", "survival", "open world", "turn based", "tactical", "indie",
+    ]
+    for genre in genre_terms:
+        if re.search(rf"\b(?:i\s+(?:like|love|enjoy)|i'm into|im into)\s+[^.]*\b{re.escape(genre)}\b", lower):
+            if add_memory_item(memory, "favorite_genres", genre.title()):
+                changed.append("genre")
+
+    return memory, ("updated:" + ",".join(sorted(set(changed))) if changed else "none")
+
+
+def memory_summary(memory):
+    memory = normalize_memory(memory)
+    labels = [
+        ("Favorite games", memory["favorite_games"]),
+        ("Games you like", memory["liked_games"]),
+        ("Games you dislike", memory["disliked_games"]),
+        ("Favorite genres", memory["favorite_genres"]),
+        ("Platforms", memory["platforms"]),
+        ("Play styles", memory["play_styles"]),
+        ("Preferences", memory["preferences"]),
+        ("Notes", memory["notes"]),
+    ]
+    lines = ["🧠 **Pulsar Memory**", ""]
+    any_memory = False
+    for label, values in labels:
+        if values:
+            any_memory = True
+            lines.append(f"- **{label}:** {', '.join(values)}")
+    if not any_memory:
+        lines.append("I don't have any saved gaming preferences yet.")
+    lines += ["", "You can say **remember that...** to save something, or **forget...** to remove it."]
+    return "\n".join(lines)
 
 
 def parse_query_filters(text):
@@ -985,6 +1178,33 @@ def extract_game_candidate(message, history, state):
 
     return None, None
 
+def extract_comparison_titles(message):
+    text = re.sub(r"\s+", " ", str(message or "").strip())
+    patterns = [
+        r"^(?:compare\s+)?(.+?)\s+(?:vs\.?|versus)\s+(.+?)[?.!]*$",
+        r"^(.+?)\s+or\s+(.+?)[?.!]*$" if re.search(r"\bcompare\b", text, re.I) else r"^$",
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, text, re.I)
+        if not m:
+            continue
+        left = m.group(1).strip(" .?!")
+        right = m.group(2).strip(" .?!")
+        if left and right and len(left) <= 100 and len(right) <= 100:
+            return left, right
+    return None
+
+
+def fetch_comparison_games(left_title, right_title):
+    left_key, left_hint = extract_game_candidate(f"review {left_title}", [], {})
+    right_key, right_hint = extract_game_candidate(f"review {right_title}", [], {})
+    left_fallback = GAME_LOOKUP_REGISTRY.get(left_key, left_hint or {"title": left_title})
+    right_fallback = GAME_LOOKUP_REGISTRY.get(right_key, right_hint or {"title": right_title})
+    left = fetch_metacritic_game(left_fallback.get("title", left_title), left_fallback)
+    right = fetch_metacritic_game(right_fallback.get("title", right_title), right_fallback)
+    return left, right
+
+
 def relevant_articles(game_title=None, query="", limit=6):
     terms = []
     if game_title:
@@ -1074,6 +1294,26 @@ def fetch_ranked_games_for_request(message, filters, intent):
     """Resolve ranking requests, including platform+genre combinations."""
     start_year, end_year, _, _ = rolling_decade_years()
     genres = genre_slugs_for_request(message)
+    if intent == "COMPARISON":
+        games = browse[:2]
+        if len(games) >= 2:
+            a, b = games[0], games[1]
+            def score_text(g):
+                return f"{g.get('score')}/100" if g.get('score') is not None else "Not currently scored"
+            lines = [
+                f"⚔️ **{a.get('title', 'Game A')} vs. {b.get('title', 'Game B')}**", "",
+                f"| | {a.get('title', 'Game A')} | {b.get('title', 'Game B')} |",
+                "|---|---|---|",
+                f"| Metacritic | {score_text(a)} | {score_text(b)} |",
+                f"| Release | {a.get('release_date') or 'Unknown'} | {b.get('release_date') or 'Unknown'} |",
+                "",
+                f"- [Metacritic: {a.get('title', 'Game A')}]({a.get('meta_url', '#')})",
+                f"- [Metacritic: {b.get('title', 'Game B')}]({b.get('meta_url', '#')})",
+                "",
+                "Ask me which one fits your preferences, platform, or play style better and I’ll make the recommendation using your saved memory."
+            ]
+            return "\n".join(lines)
+
     if intent == "DECADE":
         if genres:
             combined, seen = [], set()
@@ -1133,7 +1373,7 @@ def source_block(game=None, browse=None, articles=None):
     return "\n".join(parts)
 
 
-def call_groq(user_message, history, context, intent):
+def call_groq(user_message, history, context, intent, user_memory=None):
     if not GROQ_API_KEY:
         return None
     messages = [{
@@ -1155,8 +1395,17 @@ Critical accuracy rules:
 8. Cite important factual claims with Markdown links using the URLs provided in SOURCES.
 9. For recommendations, explain why each pick fits the user's request rather than pretending a score proves preference.
 10. If data is missing, be transparent instead of filling the gap from memory.
+11. Treat USER MEMORY as preference/context, not as evidence for factual claims.
+12. Never expose hidden implementation details, API keys, or raw internal state.
+13. Avoid repeating the previous answer verbatim unless the user asks for it.
+14. Do not spoil plot twists, endings, bosses, or major story reveals unless the user explicitly asks for spoilers.
+15. Use saved gaming preferences to personalize recommendations, but never claim the user likes something that is not in memory.
+16. For comparisons, provide a concise winner by category and explain the tradeoffs rather than choosing only by Metascore.
 
 Current intent: {intent}
+
+USER MEMORY:
+{memory_summary(user_memory or {})}
 
 SOURCES:
 {context or "(No live source data was available.)"}
@@ -1295,20 +1544,32 @@ def deterministic_response(user_message, intent, game, browse, articles, arch, f
         "🎮 **Pulsar Gaming AI**\n\n"
         "I can review a specific game, compare it with similar games, rank current "
         "releases using live Metacritic data, explain a genre, or build recommendations "
-        "around your platform and preferences. I also remember the current chat session "
-        "so follow-ups like “what about that one on PC?” keep their context."
+        "around your platform and preferences. I remember the current chat session and "
+        "saved gaming preferences, so follow-ups like “what about that one on PC?” keep their context."
     )
 
 
-def generate_pulsar_response(user_message, history=None, session_id=None):
+def generate_pulsar_response(user_message, history=None, session_id=None, user_id=None):
     msg = str(user_message or "").strip()
     if not msg:
         return "Tell me what game, genre, platform, or review you’re interested in."
 
     state = get_session_state(session_id)
     history = merge_session_history(state, history or [])
-    filters = parse_query_filters(msg)
+    user_id = str(user_id or "").strip()
+    user_memory = load_user_memory(user_id)
+    user_memory, memory_action = extract_memory_update(msg, user_memory)
+    if memory_action.startswith("updated:") or memory_action.startswith("removed:") or memory_action in {"cleared", "none"} and re.search(r"\b(?:remember|forget|delete|remove)\b", msg, re.I):
+        save_user_memory(user_id, user_memory)
+
     msg_l = msg.lower()
+    if re.search(r"\b(?:what do you remember|what have you remembered|show my memory|what do you know about my preferences)\b", msg_l):
+        reply = memory_summary(user_memory)
+        with SESSION_LOCK:
+            state["history"] = (history + [{"role": "user", "content": msg}, {"role": "assistant", "content": reply}])[-MAX_CHAT_HISTORY:]
+        return reply
+
+    filters = parse_query_filters(msg)
 
     is_decade = bool(re.search(r"\b(last decade|past decade|past 10 years|last 10 years|last ten years)\b", msg_l))
     is_current = bool(re.search(r"\b(best games right now|best games out right now|out right now|out now|best of 2026|best games of 2026|highest rated games of the year|highest rated 2026)\b", msg_l))
@@ -1323,14 +1584,23 @@ def generate_pulsar_response(user_message, history=None, session_id=None):
     game_key, game_hint = extract_game_candidate(msg, history, state)
     if game_key:
         state["last_game"] = game_key
+    comparison_titles = extract_comparison_titles(msg)
 
     browse = []
     game = None
     articles = []
 
-    arch_match = match_archetype_safe(msg) if not game_key else None
+    arch_match = match_archetype_safe(msg) if not game_key and not comparison_titles else None
 
-    if is_decade or (is_contextual_ranking and state.get("last_topic") == "DECADE"):
+    if comparison_titles:
+        left, right = fetch_comparison_games(*comparison_titles)
+        browse = [left, right]
+        state["last_topic"] = "COMPARISON"
+        intent = "COMPARISON"
+        articles = relevant_articles(game_title=left.get("title"), limit=3) + relevant_articles(game_title=right.get("title"), limit=3)
+        context = source_block(browse=browse, articles=articles)
+
+    elif is_decade or (is_contextual_ranking and state.get("last_topic") == "DECADE"):
         state["last_topic"] = "DECADE"
         intent = "DECADE"
         browse = fetch_ranked_games_for_request(msg, filters, intent)
@@ -1360,10 +1630,12 @@ def generate_pulsar_response(user_message, history=None, session_id=None):
         intent = "RECOMMENDATION" if arch else "GENERAL"
         context = source_block(articles=articles)
 
-    reply = call_groq(msg, history, context, intent)
+    reply = call_groq(msg, history, context, intent, user_memory=user_memory)
     if not reply:
         arch = arch_match if not game else None
         reply = deterministic_response(msg, intent, game, browse, articles, arch, filters, state)
+
+    state["memory_action"] = memory_action
 
     # Persist the actual turn in this session so the next request can resolve references.
     with SESSION_LOCK:
@@ -1395,6 +1667,13 @@ def init_db():
     """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_articles_tag_date ON articles(tag, published_at DESC)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_articles_date ON articles(published_at DESC)")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_memory (
+            user_id TEXT PRIMARY KEY,
+            memory_json TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        )
+    """)
 
     # Remove the previous version's fabricated demo rows. Live RSS data is now
     # the source for the feed, so a review never receives today's timestamp just
@@ -1450,32 +1729,44 @@ FEEDS = [
 
 
 def categorize_article(title, summary):
-    t_clean = title.strip().lower()
-    s_clean = summary.strip().lower()
+    t_clean = re.sub(r"\s+", " ", title.strip().lower())
+    s_clean = re.sub(r"\s+", " ", summary.strip().lower())
 
-    # 1. RUMOR checks first
-    if any(k in t_clean for k in ['rumor', 'leak', 'unconfirmed', 'everything we know', 'reportedly', 'insider', 'spotted', 'speculation', 'tease']):
+    if any(k in t_clean for k in [
+        'rumor', 'leak', 'unconfirmed', 'everything we know', 'reportedly',
+        'insider', 'spotted', 'speculation', 'allegedly', 'leaker'
+    ]):
         return 'RUMOR'
 
-    # 2. UPDATE / Patches & DLC
-    if any(k in t_clean for k in ['patch', 'hotfix', 'update', 'dlc', 'expansion', 'changelog', 'release notes']) or \
-       (any(k in t_clean for k in ['fixes', 'balance', 'notes']) and any(k in s_clean for k in ['patch', 'update', 'hotfix', 'dlc'])):
+    if any(k in t_clean for k in [
+        'patch', 'hotfix', 'update', 'dlc', 'expansion', 'changelog',
+        'release notes', 'balance changes', 'title update', 'version '
+    ]) or (any(k in t_clean for k in ['fixes', 'balance']) and any(k in s_clean for k in ['patch', 'update', 'hotfix', 'dlc'])):
         return 'UPDATE'
 
-    # 3. REVIEW (Strict: must have word 'review' or 'verdict' in the TITLE itself)
-    if re.search(r'\b(review|reviewed|verdict)\b', t_clean):
+    if re.search(r'\b(review|reviewed|verdict|review in progress|performance review)\b', t_clean):
         return 'REVIEW'
 
-    # 4. TRAILER
-    if any(k in t_clean for k in ['trailer', 'teaser', 'gameplay reveal', 'gameplay showcase', 'launch trailer', 'cinematic trailer']):
+    if any(k in t_clean for k in [
+        'trailer', 'teaser', 'gameplay reveal', 'gameplay showcase',
+        'launch trailer', 'cinematic trailer', 'new trailer', 'official reveal',
+        'first look', 'gameplay footage'
+    ]):
         return 'TRAILER'
 
-    # 5. INDUSTRY
-    if any(k in t_clean for k in ['layoff', 'acquisition', 'studio', 'ceo', 'sales', 'earnings', 'patent', 'lawsuit', 'consolidation', 'hardware', 'financial']):
+    if any(k in t_clean for k in [
+        'layoff', 'acquisition', 'acquired', 'studio', 'ceo', 'sales',
+        'earnings', 'patent', 'lawsuit', 'consolidation', 'financial',
+        'funding', 'investor', 'merger', 'business', 'game industry',
+        'developer closes', 'studio closes', 'executive'
+    ]):
         return 'INDUSTRY'
 
-    # 6. INDIE & MODS
-    if any(k in t_clean for k in ['indie', 'mod', 'modding', 'early access', 'demo', 'steam next fest', 'solo dev']):
+    if any(k in t_clean for k in [
+        'indie', 'mod', 'modding', 'workshop', 'early access', 'demo',
+        'steam next fest', 'solo dev', 'solo developer', 'small studio',
+        'independent developer', 'independent studio'
+    ]):
         return 'INDIE'
 
     return 'ALL'
@@ -1574,8 +1865,12 @@ def run_news_aggregation_pipeline(force=False):
                     desc_clean = desc_clean[:397] + "..."
 
                 inferred = categorize_article(title, desc_clean)
-                tag = f.get("default_tag") or inferred
-                if inferred in {"RUMOR", "UPDATE"}:
+                default_tag = f.get("default_tag") or "ALL"
+                # General feeds must preserve inferred categories; otherwise every
+                # article stays ALL and category tabs become permanently empty.
+                # Dedicated feeds (e.g. Reviews) keep their explicit category.
+                tag = inferred if default_tag == "ALL" else default_tag
+                if inferred in {"RUMOR", "UPDATE"} and default_tag == "ALL":
                     tag = inferred
 
                 img = extract_image_url(it)
@@ -1613,6 +1908,38 @@ def run_news_aggregation_pipeline(force=False):
 
     conn.commit()
     conn.close()
+
+
+def reclassify_existing_articles():
+    """Repair rows inserted by older builds that labeled every article ALL."""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    updated = 0
+    try:
+        cur.execute("SELECT id, title, summary, tag FROM articles")
+        rows = cur.fetchall()
+        for row_id, title, summary, old_tag in rows:
+            if old_tag != "ALL":
+                continue
+            inferred = categorize_article(title or "", summary or "")
+            if inferred != "ALL":
+                cur.execute("UPDATE articles SET tag = ? WHERE id = ?", (inferred, row_id))
+                updated += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return updated
+
+
+def feed_health_summary():
+    with FEED_LOCK:
+        status = dict(FEED_STATUS)
+    failures = [name for name, info in status.items() if not info.get("ok")]
+    return {
+        "healthy_sources": len(status) - len(failures),
+        "total_sources": len(status),
+        "failed_sources": failures,
+    }
 
 
 def feed_count(tag="ALL"):
@@ -1678,12 +2005,33 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
                 "last_aggregation_at": LAST_AGGREGATION_AT,
                 "review_count": feed_count("REVIEW"),
                 "all_count": feed_count("ALL"),
+                "trailer_count": feed_count("TRAILER"),
+                "industry_count": feed_count("INDUSTRY"),
+                "indie_count": feed_count("INDIE"),
+                "health": feed_health_summary(),
             }
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_cors_headers()
             self.end_headers()
             self.wfile.write(json.dumps(payload).encode("utf-8"))
+            return
+
+        if path == "/api/memory":
+            user_id = str(query_params.get("user_id", [""])[0]).strip()
+            if not user_id:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.send_cors_headers()
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": "user_id is required"}).encode("utf-8"))
+                return
+            memory = load_user_memory(user_id)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_cors_headers()
+            self.end_headers()
+            self.wfile.write(json.dumps({"memory": memory}).encode("utf-8"))
             return
 
         if path == "/api/news":
@@ -1773,16 +2121,31 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
                 user_msg = data.get("message", "")
                 history = data.get("history", [])
                 session_id = str(data.get("session_id") or uuid4())
+                user_id = str(data.get("user_id") or "").strip()
+                client_memory = data.get("memory")
+                if user_id and isinstance(client_memory, dict):
+                    server_memory = load_user_memory(user_id)
+                    merged_memory = normalize_memory(server_memory)
+                    for bucket, values in normalize_memory(client_memory).items():
+                        for value in values:
+                            add_memory_item(merged_memory, bucket, value)
+                    save_user_memory(user_id, merged_memory)
 
-                reply = generate_pulsar_response(user_msg, history, session_id=session_id)
+                if data.get("clear_memory") and user_id:
+                    save_user_memory(user_id, normalize_memory(None))
+                    reply = "🧠 **Pulsar Memory cleared.** I’ll start fresh with your saved gaming preferences."
+                else:
+                    reply = generate_pulsar_response(user_msg, history, session_id=session_id, user_id=user_id)
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_cors_headers()
                 self.end_headers()
+                response_memory = load_user_memory(user_id) if user_id else normalize_memory(None)
                 self.wfile.write(json.dumps({
                     "reply": reply,
                     "session_id": session_id,
+                    "memory": response_memory,
                 }).encode("utf-8"))
             except Exception as e:
                 self.send_response(500)
@@ -1851,7 +2214,13 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
                 '</div>'
             )
         else:
-            cards_html = '<div class="no-stories"><p>No stories found matching your filter. Check another section or search term!</p></div>'
+            cards_html = (
+                '<div class="no-stories">'
+                '<p><strong>No stories are available for this section yet.</strong></p>'
+                '<p>The live feeds may still be synchronizing. Try a refresh before concluding the section is empty.</p>'
+                f'<p><a href="/?tag={active_tag}&refresh=1" class="read-btn">Refresh {html.escape(active_tag.title())} feed →</a></p>'
+                '</div>'
+            )
 
         return rf"""<!DOCTYPE html>
 <html lang="en">
@@ -2433,9 +2802,14 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
         <div class="chat-header">
             <div class="chat-title">
                 <span>🤖</span>
-                <span>Pulsar Gaming AI (2026 Engine)</span>
+                <span>Pulsar Gaming AI</span>
+                <small style="color:var(--accent-green);font-weight:700">● Memory on</small>
             </div>
-            <button class="chat-close" onclick="toggleChat()">✕</button>
+            <div style="display:flex;gap:.35rem;align-items:center">
+                <button class="chat-close" onclick="askChip('what do you remember about me')" title="Show saved memory">🧠</button>
+                <button class="chat-close" onclick="clearPulsarMemory()" title="Clear saved memory">⌫</button>
+                <button class="chat-close" onclick="toggleChat()">✕</button>
+            </div>
         </div>
         <div class="chat-chips">
             <button class="chip" onclick="askChip('show me highest rated games of the year')">🏆 Best Reviewed Now</button>
@@ -2446,11 +2820,12 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             <button class="chip" onclick="askChip('Games like Gears of War')">🛡️ Gears of War</button>
             <button class="chip" onclick="askChip('Games like Call of Duty')">🎯 Call of Duty</button>
             <button class="chip" onclick="askChip('Games like Spider-Man 2')">🕸️ Spider-Man</button>
+            <button class="chip" onclick="askChip('what do you remember about me')">🧠 My Memory</button>
         </div>
         <div class="chat-messages" id="chatMsgs">
             <div class="msg msg-pulsar">
                 <p><strong>Hi! I'm Pulsar, your Gaming-Focused AI.</strong></p>
-                <p>I use live gaming sources when available, current Metacritic data, and your current chat context to answer naturally.</p>
+                <p>I use live gaming sources when available, current Metacritic data, your chat context, and saved gaming preferences to answer naturally.</p>
                 <p>Ask for any game review, current rankings, decade comparisons, platform-tailored suggestions, or follow-ups.</p>
             </div>
         </div>
@@ -2529,6 +2904,31 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             return safe.replace(/\n/g, '<br>');
         }}
 
+        function clearPulsarMemory() {{
+            if (!confirm('Clear Pulsar’s saved gaming preferences and memory?')) return;
+            fetch('/api/chat', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{
+                    message: 'clear memory',
+                    history: chatHistory.slice(-24),
+                    session_id: sessionId,
+                    user_id: userId,
+                    memory: {{}},
+                    clear_memory: true
+                }})
+            }})
+            .then(r => r.json())
+            .then(data => {{
+                memoryCache = {{}};
+                try {{ localStorage.removeItem('gp_memory_v1'); }} catch (_) {{}}
+                const p = document.createElement('div');
+                p.className = 'msg msg-pulsar';
+                p.textContent = data.reply || 'Pulsar Memory cleared.';
+                document.getElementById('chatMsgs').appendChild(p);
+            }});
+        }}
+
         function sendChat() {{
             const inp = document.getElementById('chatInput');
             const msg = inp.value.trim();
@@ -2555,7 +2955,9 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
                 body: JSON.stringify({{
                     message: msg,
                     history: chatHistory.slice(-24),
-                    session_id: sessionId
+                    session_id: sessionId,
+                    user_id: userId,
+                    memory: memoryCache
                 }})
             }})
             .then(async res => {{
@@ -2568,6 +2970,10 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
                 if (data.session_id) {{
                     sessionId = data.session_id;
                     try {{ sessionStorage.setItem('gp_session_id', sessionId); }} catch (_) {{}}
+                }}
+                if (data.memory) {{
+                    memoryCache = data.memory;
+                    try {{ localStorage.setItem('gp_memory_v1', JSON.stringify(memoryCache)); }} catch (_) {{}}
                 }}
                 chatHistory.push({{ role: 'user', content: msg }});
                 chatHistory.push({{ role: 'assistant', content: data.reply }});
@@ -2600,7 +3006,8 @@ def main():
     print("GamePulse AI starting up...")
     print(f"Loaded {len(ALL_ARCHETYPES)} gaming archetypes.")
     init_db()
-    print("Database initialized.")
+    repaired = reclassify_existing_articles()
+    print(f"Database initialized; repaired {repaired} category assignments.")
     print("Performing initial live feed synchronization...")
     run_news_aggregation_pipeline(force=True)
 
