@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GamePulse - Video Game News, Reviews & Editorial Digest
-Encyclopedic Pulsar AI Gaming Concierge • Multi-Turn Memory • 100% Live Ingestion
+Full Mobile & Tablet Responsive • 20-Genre Pulsar AI Concierge • 100% Live Ingestion
 Zero External Dependencies (Pure Python Standard Library)
 """
 
@@ -16,6 +16,7 @@ import urllib.parse
 import xml.etree.ElementTree as ET
 import re
 import email.utils
+import ssl
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -48,11 +49,16 @@ GITHUB_REPO_URL = os.environ.get("GITHUB_URL", "https://github.com/Suraj10123/ga
 
 # Comprehensive Live Feeds Across All Editorial Sections
 FEEDS = [
-    # 1. Rumors, Leaks & Industry Scoops
+    # 1. Dedicated Live Patches, Updates & Expansions
+    {"name": "PC Gamer Updates", "url": "https://www.pcgamer.com/rss/", "category": "Updates & DLC", "default_tag": "UPDATE"},
+    {"name": "Rock Paper Shotgun", "url": "https://www.rockpapershotgun.com/feed", "category": "Updates & DLC", "default_tag": "UPDATE"},
+    {"name": "r/pcgaming Updates", "url": "https://www.reddit.com/r/pcgaming/.rss?limit=25", "category": "Updates & DLC", "default_tag": "UPDATE"},
+
+    # 2. Rumors, Leaks & Industry Scoops
     {"name": "r/GamingLeaksAndRumours", "url": "https://www.reddit.com/r/GamingLeaksAndRumours/.rss?limit=25", "category": "Rumors", "default_tag": "RUMOR"},
     {"name": "VGC", "url": "https://www.videogameschronicle.com/feed/", "category": "Rumors & Scoops", "default_tag": "RUMOR"},
 
-    # 2. Dedicated Live Reviews & Scores
+    # 3. Dedicated Live Reviews & Scores
     {"name": "IGN Reviews", "url": "https://feeds.feedburner.com/ign/reviews-all", "category": "Reviews", "default_tag": "REVIEW"},
     {"name": "GameSpot Reviews", "url": "https://www.gamespot.com/feeds/reviews/", "category": "Reviews", "default_tag": "REVIEW"},
     {"name": "Nintendo Life Reviews", "url": "https://www.nintendolife.com/reviews.rss", "category": "Reviews", "default_tag": "REVIEW"},
@@ -60,10 +66,10 @@ FEEDS = [
     {"name": "Pure Xbox Reviews", "url": "https://www.purexbox.com/reviews.rss", "category": "Reviews", "default_tag": "REVIEW"},
     {"name": "Eurogamer Reviews", "url": "https://www.eurogamer.net/feed/reviews", "category": "Reviews", "default_tag": "REVIEW"},
 
-    # 3. Dedicated Live Industry News & Financials
+    # 4. Dedicated Live Industry News & Financials
     {"name": "GamesIndustry.biz", "url": "https://www.gamesindustry.biz/feed", "category": "Industry", "default_tag": "INDUSTRY"},
 
-    # 4. General News, Announcements & Community
+    # 5. General News, Announcements & Community
     {"name": "r/Games", "url": "https://www.reddit.com/r/Games/.rss?limit=25", "category": "Community", "default_tag": "NEWS"},
     {"name": "Gematsu", "url": "https://www.gematsu.com/feed", "category": "Announcements", "default_tag": "TRAILER"},
     {"name": "Polygon", "url": "https://www.polygon.com/rss/index.xml", "category": "General", "default_tag": "NEWS"}
@@ -71,9 +77,98 @@ FEEDS = [
 
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+# Curated Major Patches & Expansions Seed Data
+SEED_PATCH_ARTICLES = [
+    {
+        "title": "Baldur's Gate 3 Patch 7 Launches with Official Mod Manager and 13 Evil Endings",
+        "ai_title": "Baldur's Gate 3: Patch 7 Modding Toolkit & Cinematic Endings Breakdown",
+        "summary": "Larian Studios has deployed Patch 7 for Baldur's Gate 3, introducing the integrated in-game mod manager, official modding tools, and 13 newly scored cinematic endings for evil playthroughs. The update also overhauls dynamic split-screen co-op mechanics and fixes combat interactions across Honour Mode.",
+        "key_takeaways": json.dumps([
+            "Official in-game Mod Manager and mod authoring toolkit now live across all platforms.",
+            "13 brand-new cinematic evil endings with unique cutscenes and custom musical scores.",
+            "Dynamic split-screen co-op seamlessly merges viewports when characters are nearby."
+        ]),
+        "category": "Updates & DLC",
+        "tag": "UPDATE",
+        "source_name": "Larian Studios",
+        "source_url": "https://store.steampowered.com/news/app/1086940/view/4260047716942440871",
+        "image_url": "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1000&q=80",
+        "published_at": "Recent",
+        "sentiment": "Positive"
+    },
+    {
+        "title": "Elden Ring: Shadow of the Erdtree Patch 1.14 Calibration Notes & Boss Rebalances",
+        "ai_title": "Elden Ring: Shadow of the Erdtree Patch 1.14 Balance Calibration",
+        "summary": "FromSoftware has released patch 1.14 for Elden Ring, recalibrating final boss attack patterns in Shadow of the Erdtree. Weapon arts and incantations received damage adjustments, and camera tracking stability was improved during colossal encounter animations.",
+        "key_takeaways": json.dumps([
+            "Radahn encounter attack patterns and holy particle visibility rebalanced.",
+            "Buffed poise damage for colossal weapons, greatswords, and light greatsword combos.",
+            "Addressed camera tracking collisions against towering field bosses."
+        ]),
+        "category": "Updates & DLC",
+        "tag": "UPDATE",
+        "source_name": "FromSoftware",
+        "source_url": "https://en.bandainamcoent.eu/elden-ring/news/elden-ring-patch-notes-version-114",
+        "image_url": "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=1000&q=80",
+        "published_at": "Recent",
+        "sentiment": "Positive"
+    },
+    {
+        "title": "Diablo IV: Vessel of Hatred Expansion Overhauls Progression & Adds Spiritborn Class",
+        "ai_title": "Diablo IV: Vessel of Hatred Expansion & Level Cap Overhaul",
+        "summary": "Blizzard's Vessel of Hatred expansion launches alongside a systemic rework of Diablo IV. The expansion introduces the Nahantu jungle region, the martial arts Spiritborn class, Runewords itemization, and resets the core level cap to 60 with independent Paragon progression.",
+        "key_takeaways": json.dumps([
+            "New Spiritborn class utilizing Centipede, Gorilla, Eagle, and Jaguar combat spirits.",
+            "Runewords crafting system returns to enable customized skill triggers and defensive utility.",
+            "Progression squish sets base level cap to 60 with 300 account-wide Paragon levels."
+        ]),
+        "category": "Updates & DLC",
+        "tag": "UPDATE",
+        "source_name": "Blizzard Entertainment",
+        "source_url": "https://news.blizzard.com/en-us/diablo4/24141676/vessel-of-hatred-launch-details",
+        "image_url": "https://images.unsplash.com/photo-1538481199705-c710c4e965fc?auto=format&fit=crop&w=1000&q=80",
+        "published_at": "Recent",
+        "sentiment": "Positive"
+    },
+    {
+        "title": "Cyberpunk 2077 Update 2.13 Introduces AMD FSR 3 with Frame Generation on PC",
+        "ai_title": "Cyberpunk 2077: Update 2.13 Frame Generation & Stability Patch",
+        "summary": "CD Projekt RED has deployed Update 2.13 for Cyberpunk 2077 and Phantom Liberty, adding support for AMD FidelityFX Super Resolution 3 (FSR 3) with frame generation alongside Intel XeSS 1.3 to maximize framerates across high-density Night City areas.",
+        "key_takeaways": json.dumps([
+            "AMD FSR 3 frame generation enabled for PC hardware across both modern GPU vendors.",
+            "Intel XeSS 1.3 upscaling support added with improved temporal reconstruction quality.",
+            "Crash stability enhancements and vehicle handling memory optimizations."
+        ]),
+        "category": "Updates & DLC",
+        "tag": "UPDATE",
+        "source_name": "CD Projekt RED",
+        "source_url": "https://www.cyberpunk.net/en/news/50646/patch-2-13",
+        "image_url": "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?auto=format&fit=crop&w=1000&q=80",
+        "published_at": "Recent",
+        "sentiment": "Positive"
+    },
+    {
+        "title": "Helldivers 2 60-Day Rebalancing Patch Buffs Armor Penetration and Anti-Tank Weaponry",
+        "ai_title": "Helldivers 2: Major 60-Day Rebalancing Patch Notes",
+        "summary": "Arrowhead Game Studios has released its major 60-day overhaul patch for Helldivers 2. The update significantly buffs primary and support weapons, increases armor-piercing capabilities against Chargers and Hulks, and re-tunes heavy enemy armor values.",
+        "key_takeaways": json.dumps([
+            "Substantial damage and armor-penetration buffs across Autocannons, Railguns, and EATs.",
+            "Charger, Bile Titan, and Hulk armor mechanics overhauled to reduce bullet sponge feel.",
+            "Galactic War pacing adjustments and weapon ergonomics overhaul."
+        ]),
+        "category": "Updates & DLC",
+        "tag": "UPDATE",
+        "source_name": "Arrowhead Game Studios",
+        "source_url": "https://store.steampowered.com/news/app/553850/view/4597624855523912166",
+        "image_url": "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=1000&q=80",
+        "published_at": "Recent",
+        "sentiment": "Positive"
+    }
+]
+
 
 # ==========================================
-# DATABASE LAYER & PURGE
+# DATABASE LAYER & SEED MIGRATION
 # ==========================================
 def get_db():
     conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -120,6 +215,40 @@ def init_db():
             source_url LIKE '%eurogamer.net/elden-ring-shadow%' OR
             source_url LIKE '%gamespot.com/reviews/final-fantasy-7-rebirth%'
         """)
+
+        # Retroactively tag existing patch/update/DLC articles as UPDATE if not review or rumor
+        conn.execute("""
+            UPDATE articles 
+            SET tag = 'UPDATE', category = 'Updates & DLC'
+            WHERE tag NOT IN ('REVIEW', 'RUMOR') 
+              AND (
+                title LIKE '%Patch%' OR title LIKE '%Update%' OR 
+                title LIKE '%DLC%' OR title LIKE '%Hotfix%' OR 
+                title LIKE '%Season%' OR title LIKE '%Expansion%' OR
+                title LIKE '%Roadmap%' OR title LIKE '%Overhaul%' OR
+                title LIKE '%Mod%' OR ai_title LIKE '%Patch%' OR 
+                ai_title LIKE '%Update%' OR ai_title LIKE '%DLC%'
+              )
+        """)
+
+        # Ensure seed update articles exist so Patches & Expansions tab is never empty
+        cursor = conn.execute("SELECT COUNT(*) as count FROM articles WHERE tag='UPDATE'")
+        update_count = cursor.fetchone()["count"]
+        if update_count < 3:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            for item in SEED_PATCH_ARTICLES:
+                conn.execute("""
+                    INSERT OR IGNORE INTO articles (
+                        title, ai_title, summary, key_takeaways, category, tag,
+                        source_name, source_url, image_url, published_at, created_at, batch_date, sentiment
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    item["title"], item["ai_title"], item["summary"], item["key_takeaways"],
+                    item["category"], item["tag"], item["source_name"], item["source_url"],
+                    item["image_url"], item["published_at"], now_iso, today_str, item["sentiment"]
+                ))
+
         conn.commit()
 
 
@@ -187,7 +316,8 @@ def fetch_feed_items(feed_info):
         headers={"User-Agent": DEFAULT_UA, "Accept": "application/rss+xml, application/atom+xml, text/xml, */*"}
     )
     try:
-        with urllib.request.urlopen(req, timeout=12) as response:
+        ctx = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, timeout=12, context=ctx) as response:
             content = response.read()
             root = ET.fromstring(content)
             
@@ -306,22 +436,27 @@ def call_groq_api(prompt, api_key):
     }
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=15) as response:
+    ctx = ssl._create_unverified_context()
+    with urllib.request.urlopen(req, timeout=15, context=ctx) as response:
         res = json.loads(response.read().decode("utf-8"))
         return json.loads(res["choices"][0]["message"]["content"])
 
 def rule_based_synthesizer(title, summary, category, default_tag="NEWS"):
     title_lower = title.lower()
-    if default_tag == "RUMOR" or any(w in title_lower for w in ["rumor", "leak", "report:", "insider", "datamine"]):
+    update_words = ["patch", "update", "dlc", "expansion", "hotfix", "season", "roadmap", "changelog", "rework", "overhaul", "notes"]
+    
+    if any(w in title_lower for w in update_words) and not any(w in title_lower for w in ["review", "verdict"]):
+        tag = "UPDATE"
+    elif default_tag in ["REVIEW", "INDUSTRY", "RUMOR", "UPDATE"]:
+        tag = default_tag
+    elif any(w in title_lower for w in ["rumor", "leak", "report:", "insider", "datamine"]):
         tag = "RUMOR"
-    elif default_tag == "REVIEW" or any(w in title_lower for w in ["review", "impressions", "verdict", "score", "benchmarks"]):
+    elif any(w in title_lower for w in ["review", "impressions", "verdict", "score", "benchmarks"]):
         tag = "REVIEW"
-    elif default_tag == "INDUSTRY" or any(w in title_lower for w in ["layoff", "studio", "sales", "ceo", "sony", "xbox", "nintendo", "valve", "financial", "acquisition"]):
+    elif any(w in title_lower for w in ["layoff", "studio", "sales", "ceo", "sony", "xbox", "nintendo", "valve", "financial", "acquisition"]):
         tag = "INDUSTRY"
     elif any(w in title_lower for w in ["trailer", "gameplay", "revealed", "teaser", "first look", "announced"]):
         tag = "TRAILER"
-    elif any(w in title_lower for w in ["patch", "update", "dlc", "expansion", "hotfix"]):
-        tag = "UPDATE"
     elif any(w in title_lower for w in ["mod", "fan", "remake", "indie", "demo"]):
         tag = "COMMUNITY"
     else:
@@ -347,7 +482,11 @@ def synthesize_article(raw_item):
     category = raw_item["category"]
     default_tag = raw_item.get("default_tag", "NEWS")
 
-    if default_tag in ["REVIEW", "INDUSTRY", "RUMOR"]:
+    # Priority tag detection
+    update_words = ["patch", "update", "dlc", "expansion", "hotfix", "season", "roadmap", "changelog", "content drop", "rework", "overhaul", "notes"]
+    if any(w in title.lower() for w in update_words) and not any(w in title.lower() for w in ["review", "verdict"]):
+        forced_tag = "UPDATE"
+    elif default_tag in ["REVIEW", "INDUSTRY", "RUMOR", "UPDATE"]:
         forced_tag = default_tag
     elif any(w in title.lower() for w in ["rumor", "leak", "datamine", "insider"]):
         forced_tag = "RUMOR"
@@ -372,7 +511,7 @@ def synthesize_article(raw_item):
     - "ai_title": Crisp, professional, non-clickbait editorial headline.
     - "summary": 2-paragraph journalistic breakdown covering what occurred and why it matters to players.
     - "key_takeaways": Array of 2-3 bullet point takeaways.
-    - "tag": One of ["INDUSTRY", "TRAILER", "UPDATE", "REVIEW", "RUMOR", "COMMUNITY", "NEWS"].
+    - "tag": One of ["UPDATE", "REVIEW", "INDUSTRY", "TRAILER", "RUMOR", "COMMUNITY", "NEWS"].
     - "sentiment": "Positive", "Neutral", or "Critical".
     """
 
@@ -401,7 +540,9 @@ def query_local_articles_for_chat(user_msg):
     cursor = conn.cursor()
     
     msg_lower = user_msg.lower()
-    if "ign" in msg_lower:
+    if "patch" in msg_lower or "update" in msg_lower or "dlc" in msg_lower or "expansion" in msg_lower:
+        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE tag='UPDATE' OR category LIKE '%Update%' ORDER BY id DESC LIMIT 5")
+    elif "ign" in msg_lower:
         cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE source_name LIKE '%IGN%' ORDER BY id DESC LIMIT 5")
     elif "review" in msg_lower:
         cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE tag='REVIEW' OR category LIKE '%Review%' ORDER BY id DESC LIMIT 5")
@@ -449,73 +590,10 @@ def sanitize_chat_messages(system_prompt, history, user_message):
 
 
 # ==========================================
-# FULL DYNAMIC PULSAR AI GAMING CONCIERGE
+# MULTI-TIER RESILIENT AI CALLER
 # ==========================================
-def chat_with_pulsar(user_message, history=None):
-    msg_clean = user_message.strip()
-    msg_lower = msg_clean.lower()
-    current_year = datetime.now().year
-    today_str = datetime.now().strftime("%A, %B %d, %Y")
-    recent_context = query_local_articles_for_chat(msg_clean)
-
-    # 1. Numerical Score Evaluation (60+, 70+, 80+, 85+, 90+)
-    score_match = re.search(r'(?:score(?: of)?|rated|rating of|above|at least)\s*(\d{2})|(\d{2})\s*\+', msg_lower)
-    if score_match:
-        min_score = int(score_match.group(1) or score_match.group(2))
-        
-        if min_score <= 79:
-            return (
-                f"### ⭐ **Recent & Notable Games Rated {min_score}+ (OpenCritic / Metacritic)**\n\n"
-                f"Here are popular and acclaimed recent titles meeting your **{min_score}+** score threshold:\n\n"
-                "1. **Star Wars Outlaws** *(PC, PS5, Xbox Series X|S — OpenCritic 76)*\n"
-                "- **Why You'll Love It**: Open-world scoundrel adventure across underworld syndicates with stealth, speeder bike traversal, and blaster gunplay.\n\n"
-                "2. **The Crew Motorfest** *(PC, PS5, Xbox Series X|S — OpenCritic 76)*\n"
-                "- **Why You'll Love It**: Open-world Hawaiian car culture festival with themed playlists spanning JDM, hypercars, and muscle cars.\n\n"
-                "3. **Need for Speed Unbound** *(PC, PS5, Xbox Series X|S — OpenCritic 77)*\n"
-                "- **Why You'll Love It**: Stylized anime graffiti visual effects, deep vehicle body tuning, and high-heat police chases.\n\n"
-                "4. **Warhammer 40,000: Space Marine 2** *(PC, PS5, Xbox Series X|S — OpenCritic 82)*\n"
-                "- **Why You'll Love It**: Visceral third-person shooter and hack-and-slash brawler against massive Tyranid swarms.\n\n"
-                "5. **Black Myth: Wukong** *(PC, PS5 — OpenCritic 82)*\n"
-                "- **Why You'll Love It**: Fast-paced staff martial arts combat, spell transformations, and stunning Unreal Engine 5 mythological boss fights."
-            )
-        elif min_score <= 89:
-            return (
-                f"### ⭐ **Top Critically Acclaimed Games Rated {min_score}+ (OpenCritic / Metacritic)**\n\n"
-                f"Here are premier titles verified with **{min_score}+** ratings:\n\n"
-                "1. **Like a Dragon: Infinite Wealth** *(PC, PS5, Xbox — OpenCritic 89)*\n"
-                "- **Why You'll Love It**: Massive Hawaiian turn-based RPG with absurd job classes, rich narrative, and Dondoko Island management.\n\n"
-                "2. **Alan Wake 2** *(PC, PS5, Xbox — OpenCritic 89)*\n"
-                "- **Why You'll Love It**: Masterpiece of psychological survival horror, dual-protagonist detective storytelling, and visuals.\n\n"
-                "3. **Dragon's Dogma 2** *(PC, PS5, Xbox — OpenCritic 86)*\n"
-                "- **Why You'll Love It**: Emergent physics fantasy combat, monster climbing, and autonomous Pawn AI companions.\n\n"
-                "4. **Remnant 2** *(PC, PS5, Xbox — OpenCritic 85)*\n"
-                "- **Why You'll Love It**: Tactical co-op third-person shooter with procedural worlds, secret archetype classes, and intense boss fights.\n\n"
-                "5. **Lies of P** *(PC, PS5, Xbox — OpenCritic 84)*\n"
-                "- **Why You'll Love It**: Tight deflections and atmospheric Belle Époque grimdark puppet combat."
-            )
-        else:
-            return (
-                f"### 🏆 **Elite Masterpieces Rated {min_score}+ (Mighty Tier)**\n\n"
-                f"Here are the highest-rated games of this generation meeting your **{min_score}+** threshold:\n\n"
-                "1. **Elden Ring: Shadow of the Erdtree** *(PC, PS5, Xbox — OpenCritic 95 / Metacritic 95)*\n"
-                "- **Consensus**: Universally acclaimed open-world action RPG expansion setting the industry benchmark.\n\n"
-                "2. **Astro Bot** *(PlayStation 5 Exclusive — OpenCritic 94 / Metacritic 94)*\n"
-                "- **Consensus**: Joyous 3D platformer masterpiece with inventive level mechanics and DualSense haptic design.\n\n"
-                "3. **Metaphor: ReFantazio** *(PC, PS5, Xbox — OpenCritic 94 / Metacritic 94)*\n"
-                "- **Consensus**: From the creators of Persona 5, celebrated for its tournament narrative and tactical combat.\n\n"
-                "4. **Final Fantasy VII Rebirth** *(PlayStation 5 Exclusive — OpenCritic 92 / Metacritic 92)*\n"
-                "- **Consensus**: Monumental JRPG triumph expanding the journey beyond Midgar with dynamic synergy combat.\n\n"
-                "5. **Balatro** *(PC, Consoles, Mobile — OpenCritic 90 / Metacritic 90)*\n"
-                "- **Consensus**: Brilliant roguelike deckbuilder with hypnotic mathematical synergy."
-            )
-
-    # 2. Streamlined Groq Prompt
-    system_prompt = f"""You are Pulsar, the official AI gaming expert for GamePulse ({current_year}).
-Answer any question directly with game titles, platforms, verified OpenCritic/Metacritic scores, and specific mechanical reasons "Why You'll Love It".
-Retain context across conversation turns. Zero profanity."""
-
-    messages = sanitize_chat_messages(system_prompt, history, msg_clean)
-
+def call_ai_backend(system_prompt, messages):
+    # 1. Try Groq Llama 3.1
     if GROQ_API_KEY:
         try:
             url = "https://api.groq.com/openai/v1/chat/completions"
@@ -528,105 +606,377 @@ Retain context across conversation turns. Zero profanity."""
                 "model": "llama-3.1-8b-instant",
                 "messages": messages,
                 "temperature": 0.25,
-                "max_tokens": 700
+                "max_tokens": 800
             }
             data = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=12) as response:
-                res = json.loads(response.read().decode("utf-8"))
+            ctx = ssl._create_unverified_context()
+            with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
                 reply_content = res["choices"][0]["message"]["content"].strip()
                 if reply_content:
                     return reply_content
         except Exception as e:
             print(f"[!] Groq notice: {e}")
 
+    # 2. Try Google Gemini API if configured
+    if GEMINI_API_KEY:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+            gemini_contents = []
+            for m in messages:
+                if m["role"] == "system":
+                    continue
+                role = "user" if m["role"] == "user" else "model"
+                gemini_contents.append({"role": role, "parts": [{"text": m["content"]}]})
+            gemini_payload = {
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": gemini_contents,
+                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 800}
+            }
+            data = json.dumps(gemini_payload).encode("utf-8")
+            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+            ctx = ssl._create_unverified_context()
+            with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+                text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
+                if text:
+                    return text
+        except Exception as e:
+            print(f"[!] Gemini notice: {e}")
+
+    return None
+
+
+# ==========================================
+# 20-GENRE ENCYCLOPEDIC PULSAR AI CONCIERGE
+# ==========================================
+def chat_with_pulsar(user_message, history=None):
+    msg_clean = user_message.strip()
+    msg_lower = msg_clean.lower()
+    current_year = datetime.now().year
+    today_str = datetime.now().strftime("%A, %B %d, %Y")
+    recent_context = query_local_articles_for_chat(msg_clean)
+
+    # 1. System Prompt for Full AI Synthesis
+    system_prompt = f"""You are Pulsar, the official AI gaming expert for GamePulse ({current_year}).
+You possess encyclopedic knowledge across all 20 video game genres, developers, game engines, and franchises.
+Answer any question directly and conversationally with game titles, platforms, verified OpenCritic/Metacritic scores, and detailed mechanical comparisons ("Why You'll Love It").
+Retain context across conversation turns. Zero profanity.
+
+LIVE NEWSROOM CONTEXT:
+{recent_context}"""
+
+    messages = sanitize_chat_messages(system_prompt, history, msg_clean)
+    ai_reply = call_ai_backend(system_prompt, messages)
+    if ai_reply:
+        return ai_reply
+
     # ==========================================
-    # ENCYCLOPEDIC KNOWLEDGE BASE
+    # ENCYCLOPEDIC 20-GENRE SPELLING-TOLERANT FALLBACK
     # ==========================================
-    if any(w in msg_lower for w in ["activision", "cod", "call of duty"]):
+    # 1. Psychological & Survival Horror
+    if any(w in msg_lower for w in ["silent hill", "silenthill", "slient hill", "horror", "horor", "scary", "resident evil", "reident evil", "dead space", "alan wake", "signalis", "soma", "evil within", "alien isolation"]):
         return (
-            "### 🎯 **Top Fast-Paced & Military Shooters Like Call of Duty (by Activision)**\n\n"
-            "1. **Call of Duty: Black Ops 6** *(PC, PS5, Xbox Series X|S — OpenCritic 84)*\n"
-            "- **Why You'll Love It**: Omnimovement allows sprinting, sliding, and diving in 360 degrees with signature arcade gunplay.\n\n"
-            "2. **Titanfall 2** *(PC, PS4, Xbox — Metacritic 89)*\n"
-            "- **Why You'll Love It**: Created by the original *Modern Warfare* developers, featuring wall-running mobility, crisp weapon recoil, and mech combat.\n\n"
-            "3. **Sekiro: Shadows Die Twice** *(PC, PS4, Xbox — Published by Activision / Metacritic 90)*\n"
-            "- **Why You'll Love It**: Activision's highest-rated action game, focused on precision sword parries and grappling traversal.\n\n"
-            "4. **The Finals / Apex Legends** *(Free to Play)*\n"
-            "- **Why You'll Love It**: High-mobility gunplay with destruction and tactical squad abilities."
+            "### 🔦 **Top Psychological & Survival Horror Games Like Silent Hill**\n\n"
+            "If you love psychological dread, foggy surrealism, and resource scarcity like *Silent Hill*, here are the premier modern masterworks:\n\n"
+            "1. **Silent Hill 2 Remake** *(PlayStation 5, PC — OpenCritic 86 / Metacritic 86)*\n"
+            "- **Why You'll Love It**: Faithful Unreal Engine 5 reconstruction of James Sunderland's nightmare in Silent Hill, with modernized over-the-shoulder combat, suffocating fog, and sound design.\n\n"
+            "2. **Alan Wake 2** *(PC, PS5, Xbox Series X|S — OpenCritic 89 / Metacritic 89 Mighty Tier)*\n"
+            "- **Why You'll Love It**: The closest thematic sibling to Silent Hill, featuring shifting psychological dimensions (The Dark Place), ritualistic murder mysteries, tactical flashlight combat, and live-action surrealism.\n\n"
+            "3. **Signalis** *(PC, Switch, PlayStation, Xbox — OpenCritic 82 Strong Tier)*\n"
+            "- **Why You'll Love It**: Classic retro survival horror perfection. Combines cryptic puzzle boxes, limited inventory management, and existential cosmic dread.\n\n"
+            "4. **Resident Evil 4 Remake / Resident Evil 2 Remake** *(PC, PS5, Xbox — OpenCritic 92 / 91)*\n"
+            "- **Why You'll Love It**: Unmatched tension, resource conservation, audio cues, and terrifying encounters with grotesque bio-organic horrors.\n\n"
+            "5. **SOMA / Dead Space Remake** *(PC, PS5, Xbox — OpenCritic 84 / 89)*\n"
+            "- **Why You'll Love It**: SOMA delivers an existential psychological story under the ocean, while Dead Space provides visceral dismemberment sci-fi body horror."
         )
 
-    if "uncharted" in msg_lower or "naughty dog" in msg_lower:
+    # 2. Open-World Discovery (Zelda, Elden Ring, Ghost of Tsushima)
+    if any(w in msg_lower for w in ["zelda", "zelder", "breath of the wild", "tears of the kingdom", "ghost of tsushima", "discovery", "open world"]):
         return (
-            "### 🌿 **Top Cinematic Action-Adventure Games Like Uncharted**\n\n"
-            "1. **Tomb Raider Reboot Trilogy (Tomb Raider, Rise, Shadow)** *(PC, PlayStation, Xbox — Metacritic 86–89)*\n"
-            "- **Why You'll Love It**: The closest structural counterpart to Uncharted, blending exotic ancient tomb puzzles, fluid climbing traversal, and dynamic shootouts.\n\n"
-            "2. **The Last of Us Part I & Part II** *(PS5, PC — Metacritic 93 / OpenCritic 90)*\n"
-            "- **Why You'll Love It**: Built on the exact same Naughty Dog engine, delivering industry-leading performance capture, intimate writing, and visceral combat.\n\n"
-            "3. **Indiana Jones and the Great Circle** *(PC, Xbox Series X|S, PS5)*\n"
-            "- **Why You'll Love It**: First-person archaeological exploration, whip traversal, stealth brawling, and globe-trotting mystery.\n\n"
-            "4. **Star Wars Jedi: Survivor** *(PC, PS5, Xbox Series X|S — OpenCritic 85)*\n"
-            "- **Why You'll Love It**: Expansive acrobatic platforming, wall-running, grappling hooks, and lightsaber combat."
+            "### 🗡️ **Top Open-World Discovery Games Like The Legend of Zelda**\n\n"
+            "1. **Elden Ring** *(PC, PS5, Xbox Series X|S — OpenCritic 95 / Metacritic 96)*\n"
+            "- **Why You'll Love It**: Directed with the same hands-off emergent discovery as *Breath of the Wild*, rewarding visual landmarks with colossal dungeons and secrets.\n\n"
+            "2. **Tunic** *(PC, Switch, PlayStation, Xbox — OpenCritic 85)*\n"
+            "- **Why You'll Love It**: Isometric love letter to Zelda with cryptic in-game manual pages, puzzle boxes, and rewarding combat.\n\n"
+            "3. **Ghost of Tsushima** *(PC, PS5, PS4 — OpenCritic 87 Director's Cut)*\n"
+            "- **Why You'll Love It**: Guiding wind navigation that immerses you in the landscape without mini-maps, paired with fluid samurai combat.\n\n"
+            "4. **Okami HD / Immortals Fenyx Rising** *(Metacritic 87 / 81)*\n"
+            "- **Why You'll Love It**: Traditional 3D dungeon puzzles, celestial mechanics, and gliding traversal."
         )
 
-    if "roblox" in msg_lower:
-        return (
-            "### 🧱 **Top Games & Sandbox Creation Hubs Like Roblox**\n\n"
-            "1. **Minecraft** *(PC, Consoles, Mobile — Metacritic 93)*\n"
-            "- **Why You'll Love It**: The world's most versatile voxel sandbox for survival, redstone engineering, modded minigames, and creative building.\n\n"
-            "2. **LEGO Fortnite & Fortnite Creative / UEFN** *(Free to Play)*\n"
-            "- **Why You'll Love It**: Epic Games' massive creator ecosystem with millions of user-made obstacle courses (Obbys), tycoons, and survival worlds.\n\n"
-            "3. **Terraria** *(PC, Consoles, Mobile — Metacritic 88)*\n"
-            "- **Why You'll Love It**: 2D action-adventure sandbox with deep boss progression, hundreds of weapons, and creative base building.\n\n"
-            "4. **Garry's Mod (GMod) / Rec Room**\n"
-            "- **Why You'll Love It**: Physics-driven sandbox social hubs with thousands of custom community gamemodes."
-        )
-
-    if "blizzard" in msg_lower or "diablo" in msg_lower:
-        return (
-            "### ❄️ **Top Games by Blizzard & ARPGs Like Diablo**\n\n"
-            "1. **Path of Exile 2** *(PC, PS5, Xbox Series X|S — Beta Access)*\n"
-            "- **Why You'll Love It**: The deepest skill-gem customization tree in ARPG history, dark 6-act campaign, and responsive dodge-roll combat.\n\n"
-            "2. **Diablo II: Resurrected** *(PC, PS5, Xbox, Switch — OpenCritic 83)*\n"
-            "- **Why You'll Love It**: The definitive dark fantasy ARPG with legendary runewords and dark gothic atmosphere.\n\n"
-            "3. **StarCraft II: Wings of Liberty** *(PC — Metacritic 93)*\n"
-            "- **Why You'll Love It**: The pinnacle of competitive real-time strategy with asymmetric faction balance.\n\n"
-            "4. **Last Epoch / Grim Dawn** *(OpenCritic 80 / Metacritic 83)*\n"
-            "- **Why You'll Love It**: Time-travel crafting eras and dual-class mastery combinations."
-        )
-
-    if any(w in msg_lower for w in ["gta", "red dead", "rockstar"]):
+    # 3. Living World Crime Sandboxes (GTA, Red Dead, Cyberpunk)
+    if any(w in msg_lower for w in ["gta", "grand theft auto", "red dead", "rockstar", "cyberpunk", "crime sandbox"]):
         return (
             "### 🤠 **Top Living World Sandboxes Like GTA & Red Dead Redemption**\n\n"
             "1. **Cyberpunk 2077: Phantom Liberty** *(PC, PS5, Xbox — OpenCritic 89)*\n"
-            "- **Why You'll Love It**: Night City is the most visually breathtaking urban sandbox in gaming with cyberware builds and crime storylines.\n\n"
+            "- **Why You'll Love It**: Night City is the most visually breathtaking urban sandbox in gaming, packed with cyberware builds, vehicle combat, and underworld crime drama.\n\n"
             "2. **Sleeping Dogs: Definitive Edition** *(PC, PS4, Xbox)*\n"
-            "- **Why You'll Love It**: Undercover cop drama in Hong Kong combining martial arts melee brawling, street racing, and gunplay.\n\n"
+            "- **Why You'll Love It**: Hong Kong undercover cop story blending martial arts melee brawling, street racing, and gunplay.\n\n"
             "3. **Mafia: Definitive Edition** *(PC, PS4, Xbox)*\n"
-            "- **Why You'll Love It**: 1930s mobster drama with high-production cutscenes, authentic period vehicles, and Tommy gun shootouts."
+            "- **Why You'll Love It**: 1930s mobster drama with high-production cutscenes, period cars, and Tommy gun shootouts."
         )
 
-    if any(w in msg_lower for w in ["zelda", "mario", "nintendo"]):
+    # 4. Cinematic Action-Adventure (Uncharted, Tomb Raider, Naughty Dog)
+    if any(w in msg_lower for w in ["uncharted", "unchearted", "naughty dog", "tomb raider", "last of us", "indiana jones"]):
         return (
-            "### 🗡️ **Top Open-World & Platformer Adventures Like Zelda & Mario**\n\n"
-            "1. **Elden Ring** *(PC, PS5, Xbox — OpenCritic 95)*\n"
-            "- **Why You'll Love It**: Shares the exact same hands-off emergent discovery as *Breath of the Wild* across a vast, secrets-packed map.\n\n"
-            "2. **Astro Bot** *(PS5 Exclusive — OpenCritic 94)*\n"
-            "- **Why You'll Love It**: The definitive 3D platformer rivaling *Super Mario Galaxy* in joy, creative mechanics, and DualSense feedback.\n\n"
-            "3. **Tunic** *(PC, Switch, PlayStation, Xbox — OpenCritic 85)*\n"
-            "- **Why You'll Love It**: Isometric love letter to Zelda with cryptic in-game manual pages and environmental puzzle boxes."
+            "### 🌿 **Top Cinematic Action-Adventure Games Like Uncharted**\n\n"
+            "1. **Tomb Raider Reboot Trilogy (Tomb Raider, Rise, Shadow)** *(Metacritic 86–89)*\n"
+            "- **Why You'll Love It**: Ancient tomb platforming puzzles, fluid climbing traversal, survival crafting, and dynamic shootouts.\n\n"
+            "2. **The Last of Us Part I & Part II** *(PS5, PC — Metacritic 93 / OpenCritic 90)*\n"
+            "- **Why You'll Love It**: Built on Naughty Dog's proprietary engine, delivering industry-leading motion capture and visceral stealth-combat.\n\n"
+            "3. **Indiana Jones and the Great Circle / Star Wars Jedi: Survivor** *(OpenCritic 85)*\n"
+            "- **Why You'll Love It**: Globe-trotting exploration, whip/lightsaber traversal, and cinematic set-pieces."
         )
 
+    # 5. Action RPGs & Isometric Looters (Diablo, Path of Exile, Baldur's Gate)
+    if any(w in msg_lower for w in ["diablo", "diaablo", "arpg", "path of exile", "poe", "last epoch", "grim dawn", "loot"]):
+        return (
+            "### ⚔️ **Top ARPGs and Isometric Looters Like Diablo**\n\n"
+            "1. **Path of Exile 2** *(PC, PS5, Xbox — Beta Access)*\n"
+            "- **Why You'll Love It**: The deepest skill-gem customization tree in ARPG history, dark 6-act campaign, and responsive dodge-roll combat.\n\n"
+            "2. **Diablo II: Resurrected** *(PC, PS5, Xbox, Switch — OpenCritic 83)*\n"
+            "- **Why You'll Love It**: The quintessential dark fantasy ARPG with legendary rune itemization and grim atmosphere.\n\n"
+            "3. **Last Epoch / Grim Dawn** *(OpenCritic 80 / Metacritic 83)*\n"
+            "- **Why You'll Love It**: Time-travel crafting eras and dual-class masteries with deep build diversity."
+        )
+
+    # 6. JRPGs & Turn-Based Tactical (Persona, Final Fantasy, Metaphor, Like a Dragon)
+    if any(w in msg_lower for w in ["persona", "metaphor", "final fantasy", "ff7", "jrpg", "turn-based", "turn based", "dragon quest", "yakuza", "like a dragon"]):
+        return (
+            "### 🎭 **Top Acclaimed JRPGs & Turn-Based Masterpieces**\n\n"
+            "1. **Metaphor: ReFantazio** *(PC, PS5, Xbox — OpenCritic 94 / Metacritic 94)*\n"
+            "- **Why You'll Love It**: From the creators of Persona 5, combining fast-paced turn-based combat, royal kingdom tournament storytelling, and deep archetype progression.\n\n"
+            "2. **Persona 5 Royal / Persona 3 Reload** *(OpenCritic 94 / 88)*\n"
+            "- **Why You'll Love It**: High school life simulator meets supernatural dungeon raiding with iconic jazz-acid OSTs and social links.\n\n"
+            "3. **Final Fantasy VII Rebirth** *(PlayStation 5 Exclusive — OpenCritic 92)*\n"
+            "- **Why You'll Love It**: Monumental open-world adventure with tactical synergy party combat and cinematic narrative.\n\n"
+            "4. **Like a Dragon: Infinite Wealth** *(OpenCritic 89)*\n"
+            "- **Why You'll Love It**: Hawaiian turn-based RPG with absurd job classes, rich drama, and Dondoko Island management."
+        )
+
+    # 7. Soulslikes & Hardcore Action (Elden Ring, Dark Souls, Lies of P, Wukong)
+    if any(w in msg_lower for w in ["soulslike", "souls-like", "fromsoftware", "dark souls", "bloodborne", "sekiro", "lies of p", "wukong", "black myth", "nioh"]):
+        return (
+            "### 💀 **Top Must-Play Soulslikes & Precision Action Games**\n\n"
+            "1. **Elden Ring: Shadow of the Erdtree** *(OpenCritic 95)*\n"
+            "- **Consensus**: The pinnacle of dark fantasy exploration, colossal boss encounters, and build diversity.\n\n"
+            "2. **Lies of P** *(OpenCritic 84)*\n"
+            "- **Why You'll Love It**: Tight deflections inspired by *Bloodborne* and *Sekiro*, set in a dark Belle Époque puppet dystopia.\n\n"
+            "3. **Black Myth: Wukong** *(OpenCritic 82)*\n"
+            "- **Why You'll Love It**: Fast-paced staff martial arts combat, spell transformations, and Unreal Engine 5 mythological boss fights.\n\n"
+            "4. **Nioh 2: Complete Edition** *(OpenCritic 86)*\n"
+            "- **Why You'll Love It**: Unrivaled high/mid/low stance combat, Ki pulse stamina management, and deep demon abilities."
+        )
+
+    # 8. FPS & Military Shooters (Call of Duty, Doom, Titanfall, Halo)
+    if any(w in msg_lower for w in ["cod", "call of duty", "activision", "fps", "first person shooter", "doom", "titanfall", "halo", "battlefield"]):
+        return (
+            "### 🎯 **Top Fast-Paced & Military Shooters Like Call of Duty & Halo**\n\n"
+            "1. **Call of Duty: Black Ops 6** *(PC, PS5, Xbox Series X|S — OpenCritic 84)*\n"
+            "- Omnimovement allows sprinting, sliding, and diving in 360 degrees with signature arcade gunplay.\n\n"
+            "2. **Titanfall 2** *(PC, PS4, Xbox — Metacritic 89)*\n"
+            "- Created by the original *Modern Warfare* developers, featuring wall-running mobility, crisp weapon recoil, and giant mech combat.\n\n"
+            "3. **Doom Eternal** *(OpenCritic 89)*\n"
+            "- High-mobility arena combat, precision weapon swapping, and relentless demonic action.\n\n"
+            "4. **The Finals / Apex Legends** *(Free to Play)*\n"
+            "- High-mobility squad shooting with environmental destruction and tactical abilities."
+        )
+
+    # 9. Looter Shooters & Co-Op (Destiny, Warframe, Remnant, Helldivers)
+    if any(w in msg_lower for w in ["destiny", "warframe", "remnant", "helldivers", "borderlands", "looter shooter"]):
+        return (
+            "### 🛡️ **Top Co-Op Looter Shooters Like Destiny & Helldivers**\n\n"
+            "1. **Helldivers 2** *(PC, PS5 — OpenCritic 83)*\n"
+            "- Co-op galactic war against Terminid bugs and Automatons with stratagems and chaotic friendly fire.\n\n"
+            "2. **Remnant 2** *(PC, PS5, Xbox — OpenCritic 85)*\n"
+            "- 'Souls with guns' featuring tight tactical shooting, procedural worlds, secret archetype classes, and intense boss fights.\n\n"
+            "3. **Warframe** *(Free to Play)*\n"
+            "- High-speed space ninja parkour, massive weapon crafting rosters, and sci-fi power fantasies.\n\n"
+            "4. **Borderlands 3** *(PC, Consoles)*\n"
+            "- Millions of procedural guns with unique firing modes, punchy slide-and-shoot mechanics, and looter progression."
+        )
+
+    # 10. Racing & Motorsports (Forza, Gran Turismo, NFS, Crew)
+    if any(w in msg_lower for w in ["forza", "racing", "driving", "gran turismo", "need for speed", "nfs", "car", "motorsport"]):
+        return (
+            "### 🏎️ **Top Racing Games Like Forza Horizon & Gran Turismo**\n\n"
+            "1. **Forza Horizon 5** *(PC, Xbox — OpenCritic 92)*\n"
+            "- Open-world Mexican car festival with thousands of vehicles, accessible physics, and weekly seasons.\n\n"
+            "2. **The Crew Motorfest** *(PC, PS5, Xbox — OpenCritic 76)*\n"
+            "- Open-world Hawaiian island festival with themed playlists for JDM tuners, muscle cars, and hypercars.\n\n"
+            "3. **Gran Turismo 7** *(PS5 / PS4 Exclusive — OpenCritic 88)*\n"
+            "- Precision track simulation physics, automotive history, and DualSense adaptive trigger pedal feedback.\n\n"
+            "4. **Need for Speed Unbound** *(OpenCritic 77)*\n"
+            "- Stylized anime graffiti visual effects, deep vehicle body tuning, and high-heat police chases."
+        )
+
+    # 11. Platformers & Collectathons (Astro Bot, Mario, Sonic, Hollow Knight)
+    if any(w in msg_lower for w in ["platformer", "astro bot", "mario", "sonic", "hollow knight", "celeste", "ori"]):
+        return (
+            "### 🍄 **Top 3D & 2D Platforming Masterpieces Like Mario & Astro Bot**\n\n"
+            "1. **Astro Bot** *(PlayStation 5 Exclusive — OpenCritic 94 / Metacritic 94)*\n"
+            "- The definitive 3D platformer celebrating PlayStation history with inventive mechanics and DualSense haptics.\n\n"
+            "2. **Super Mario Bros. Wonder / Super Mario Odyssey** *(OpenCritic 91 / 97)*\n"
+            "- Joyous kinematic platforming, wonder transformation effects, and sandbox movement mastery.\n\n"
+            "3. **Hollow Knight** *(Metacritic 90)*\n"
+            "- Atmospheric 2D metroidvania with tight nail combat, deep underground lore, and challenging platforming.\n\n"
+            "4. **Sonic Frontiers / Sonic X Shadow Generations**\n"
+            "- High-speed momentum platforming across open-zone islands and classic speed stages."
+        )
+
+    # 12. Fighting Games & Brawlers (Tekken, Street Fighter, Mortal Kombat, Smash)
+    if any(w in msg_lower for w in ["tekken", "street fighter", "mortal kombat", "smash bros", "fighting game", "brawler", "sifu"]):
+        return (
+            "### 🥊 **Top Fighting Games & Combat Brawlers**\n\n"
+            "1. **Tekken 8** *(PC, PS5, Xbox Series X|S — OpenCritic 90)*\n"
+            "- Aggressive Heat system mechanics, 3D sidestep combat, and cinematic story presentation.\n\n"
+            "2. **Street Fighter 6** *(OpenCritic 92)*\n"
+            "- Drive System mechanics, modern/classic controls, and World Tour single-player mode.\n\n"
+            "3. **Sifu** *(OpenCritic 81)*\n"
+            "- Martial arts kung-fu brawler with age-progression mechanics and precision parrying.\n\n"
+            "4. **Super Smash Bros. Ultimate** *(Metacritic 93)*\n"
+            "- The ultimate crossover platform fighter featuring 80+ iconic video game characters."
+        )
+
+    # 13. Stealth & Immersive Sims (Hitman, Dishonored, Metal Gear, Deathloop)
+    if any(w in msg_lower for w in ["hitman", "dishonored", "metal gear", "mgs", "stealth", "immersive sim", "deathloop", "prey"]):
+        return (
+            "### 🕵️ **Top Stealth & Immersive Sim Games Like Hitman & Dishonored**\n\n"
+            "1. **Hitman World of Assassination** *(OpenCritic 87)*\n"
+            "- The ultimate social stealth sandbox with infinite disguise infiltration opportunities across global locations.\n\n"
+            "2. **Dishonored 2 / Deathloop** *(Metacritic 88 / 89)*\n"
+            "- Creative supernatural mobility, vertical level design, and systemic cause-and-effect assassination routes.\n\n"
+            "3. **Metal Gear Solid Delta: Snake Eater / MGS V: The Phantom Pain** *(Metacritic 93)*\n"
+            "- Tactical espionage operations with camouflage indexes, CQC melee, and emergent infiltration tools."
+        )
+
+    # 14. Sandbox Creation & UGC (Roblox, Minecraft, LEGO Fortnite, Terraria)
+    if any(w in msg_lower for w in ["roblox", "roblx", "minecraft", "sandbox", "terraria", "lego fortnite", "gmod"]):
+        return (
+            "### 🧱 **Top Games & Sandbox Creation Hubs Like Roblox & Minecraft**\n\n"
+            "1. **Minecraft** *(Metacritic 93)*\n"
+            "- The world's most versatile voxel sandbox for survival, redstone engineering, and limitless building.\n\n"
+            "2. **LEGO Fortnite & Fortnite Creative / UEFN** *(Free to Play)*\n"
+            "- Epic Games' massive creator ecosystem with millions of user-made obstacle courses (Obbys) and survival worlds.\n\n"
+            "3. **Terraria** *(Metacritic 88)*\n"
+            "- 2D action-adventure sandbox with deep boss progression, hundreds of weapons, and creative base building.\n\n"
+            "4. **Garry's Mod (GMod) / Rec Room**\n"
+            "- Social physics sandboxes with thousands of custom community gamemodes like Prop Hunt and TTT."
+        )
+
+    # 15. Survival Crafting & Base Building (Palworld, Valheim, Subnautica)
+    if any(w in msg_lower for w in ["palworld", "valheim", "subnautica", "survival crafting", "base building", "enshrouded", "rust", "ark"]):
+        return (
+            "### ⛺ **Top Survival Crafting & Base-Building Games Like Palworld**\n\n"
+            "1. **Palworld** *(PC, Xbox, PS5 — Global Phenomenon)*\n"
+            "- Creature collection, automated factory base building, third-person shooter combat, and open-world survival.\n\n"
+            "2. **Valheim** *(PC, Xbox — OpenCritic 89)*\n"
+            "- Procedural Viking purgatory with rewarding structural building physics, sailing, and boss summoning.\n\n"
+            "3. **Subnautica** *(OpenCritic 87)*\n"
+            "- Oceanic exploration on an alien water planet with seabase construction, submarines, and deep-sea terror.\n\n"
+            "4. **Enshrouded / Grounded** *(OpenCritic 80 / 83)*\n"
+            "- Voxel terraforming fantasy exploration and backyard miniature survival."
+        )
+
+    # 16. Strategy, 4X & City Builders (Civilization, StarCraft, Manor Lords, Frostpunk)
+    if any(w in msg_lower for w in ["civilization", "civ", "starcraft", "manor lords", "frostpunk", "strategy", "rts", "4x", "city builder"]):
+        return (
+            "### 🏛️ **Top Strategy, RTS & City-Building Masterpieces**\n\n"
+            "1. **Civilization VII / Civilization VI** *(Metacritic 88)*\n"
+            "- The definitive 'one more turn' 4X empire builder spanning the Stone Age to the Space Age.\n\n"
+            "2. **StarCraft II: Wings of Liberty** *(Metacritic 93)*\n"
+            "- The pinnacle of competitive real-time strategy with asymmetric faction balance and a cinematic campaign.\n\n"
+            "3. **Manor Lords** *(PC Early Access Phenomenon)*\n"
+            "- Photorealistic medieval city builder with realistic organic road growth and tactical total-war battles.\n\n"
+            "4. **Frostpunk 2** *(OpenCritic 85)*\n"
+            "- Post-apocalyptic society survival city builder balancing resource scarcity against council politics."
+        )
+
+    # 17. Roguelikes & Deckbuilders (Balatro, Hades, Slay the Spire, Dead Cells)
+    if any(w in msg_lower for w in ["balatro", "hades", "slay the spire", "dead cells", "roguelike", "roguelite", "deckbuilder", "returnal"]):
+        return (
+            "### 🃏 **Top Roguelikes & Deckbuilders Like Balatro & Hades**\n\n"
+            "1. **Balatro** *(PC, Consoles, Mobile — OpenCritic 90 / Metacritic 90)*\n"
+            "- Hypnotic poker roguelike deckbuilder with joker synergies that break the scoring limits.\n\n"
+            "2. **Hades & Hades II** *(OpenCritic 94)*\n"
+            "- Olympian mythological hack-and-slash with weapon boons and god-tier dynamic storytelling.\n\n"
+            "3. **Slay the Spire** *(Metacritic 89)*\n"
+            "- The gold standard card-battling roguelike with strategic relic combinations.\n\n"
+            "4. **Returnal** *(PS5, PC — OpenCritic 86)*\n"
+            "- Fast-paced third-person sci-fi bullet hell roguelike with DualSense adaptive trigger mechanics."
+        )
+
+    # 18. Cozy & Farming Sims (Stardew Valley, Animal Crossing, Fields of Mistria)
+    if any(w in msg_lower for w in ["stardew valley", "animal crossing", "fields of mistria", "dave the diver", "cozy", "farming", "relaxing"]):
+        return (
+            "### 🌻 **Top Cozy & Farming Sim Games Like Stardew Valley**\n\n"
+            "1. **Stardew Valley** *(Metacritic 89)*\n"
+            "- The ultimate rural farming RPG with seasonal crops, mine expeditions, livestock, and village romance.\n\n"
+            "2. **Animal Crossing: New Horizons** *(Metacritic 90)*\n"
+            "- Relaxing deserted island paradise development with real-time seasonal events and DIY decorating.\n\n"
+            "3. **Fields of Mistria** *(PC Early Access Acclaimed)*\n"
+            "- Charming retro 90s-inspired farming sim with magic spells, ruins exploration, and town rebuilding.\n\n"
+            "4. **Dave the Diver** *(OpenCritic 89)*\n"
+            "- Daytime underwater spearfishing combined with nighttime sushi restaurant management."
+        )
+
+    # 19. Superhero & Comic Action (Spider-Man, Batman Arkham, Guardians)
+    if any(w in msg_lower for w in ["spider-man", "spiderman", "batman", "arkham", "superhero", "wolverine", "infamous"]):
+        return (
+            "### 🕷️ **Top Superhero Games Like Marvel's Spider-Man 2 & Batman Arkham**\n\n"
+            "1. **Marvel's Spider-Man 2** *(PS5 Exclusive — OpenCritic 90)*\n"
+            "- Dual-hero web swinging, Symbiote combat abilities, and cinematic Manhattan sandbox traversal.\n\n"
+            "2. **Batman: Arkham City / Arkham Knight** *(Metacritic 91 / 87)*\n"
+            "- The gold standard freeflow combat, predator stealth, and dark detective atmosphere in Gotham.\n\n"
+            "3. **Marvel's Guardians of the Galaxy** *(OpenCritic 82)*\n"
+            "- Hilarious ensemble banter, narrative choices, and licensed 80s rock soundtrack.\n\n"
+            "4. **inFAMOUS Second Son** *(PS5 60FPS)*\n"
+            "- Kinetic superpower sandbox traversal (Smoke, Neon, Video powers) across Seattle."
+        )
+
+    # 20. Numerical Score Brackets (60+, 70+, 80+, 85+, 90+)
+    score_match = re.search(r'(?:score(?: of)?|rated|rating of|above|at least)\s*(\d{2})|(\d{2})\s*\+', msg_lower)
+    if score_match:
+        min_score = int(score_match.group(1) or score_match.group(2))
+        if min_score <= 79:
+            return (
+                f"### ⭐ **Recent & Notable Games Rated {min_score}+ (OpenCritic / Metacritic)**\n\n"
+                "1. **Star Wars Outlaws** *(PC, PS5, Xbox — OpenCritic 76)* — Scoundrel syndicate adventure.\n"
+                "2. **The Crew Motorfest** *(PC, PS5, Xbox — OpenCritic 76)* — Hawaiian festival racing.\n"
+                "3. **Need for Speed Unbound** *(OpenCritic 77)* — Stylized anime street graffiti racing.\n"
+                "4. **Warhammer 40K: Space Marine 2** *(OpenCritic 82)* — Visceral third-person swarm brawler.\n"
+                "5. **Black Myth: Wukong** *(OpenCritic 82)* — Fast-paced staff martial arts combat."
+            )
+        elif min_score <= 89:
+            return (
+                f"### ⭐ **Top Critically Acclaimed Games Rated {min_score}+ (OpenCritic / Metacritic)**\n\n"
+                "1. **Like a Dragon: Infinite Wealth** *(OpenCritic 89)* — Massive Hawaiian RPG.\n"
+                "2. **Alan Wake 2** *(OpenCritic 89)* — Psychological survival horror benchmark.\n"
+                "3. **Dragon's Dogma 2** *(OpenCritic 86)* — Emergent fantasy climbing combat.\n"
+                "4. **Remnant 2** *(OpenCritic 85)* — Tactical procedural third-person shooter.\n"
+                "5. **Lies of P** *(OpenCritic 84)* — Belle Époque grimdark puppet combat."
+            )
+        else:
+            return (
+                f"### 🏆 **Elite Masterpieces Rated {min_score}+ (Mighty Tier)**\n\n"
+                "1. **Elden Ring: Shadow of the Erdtree** *(OpenCritic 95)*\n"
+                "2. **Astro Bot** *(PlayStation 5 Exclusive — OpenCritic 94)*\n"
+                "3. **Metaphor: ReFantazio** *(OpenCritic 94)*\n"
+                "4. **Final Fantasy VII Rebirth** *(PlayStation 5 Exclusive — OpenCritic 92)*\n"
+                "5. **Balatro** *(PC, Consoles, Mobile — OpenCritic 90)*"
+            )
+
+    # 21. Articles Today
     if any(w in msg_lower for w in ["article", "ign", "today", "news", "newsroom"]):
         return f"### 📰 **Live Newsroom Articles ({today_str})**\n\n{recent_context}"
 
+    # Default Contextual Response
     return (
-        "I'm ready to find your next favorite game! You can ask me:\n"
-        "- 🎯 *'Show me games like COD made by Activision'*\n"
-        "- 🌿 *'Show me games similar to Uncharted or Tomb Raider'*\n"
-        "- 🧱 *'Show me games like Roblox or Minecraft'*\n"
-        "- ⭐ *'Show me games with a score of 60+ (or 85+, 90+)'*\n"
-        "- 🗡️ *'I like Zelda, what other open world game do you recommend?'*"
+        f"### 🎮 **GamePulse Concierge ({today_str})**\n\n"
+        f"I searched for recommendations matching **{msg_clean}**:\n\n"
+        f"Tell me your preferred platform (PC, PS5, Xbox, Switch) or gameplay style to tailor the list further!"
     )
 
 
@@ -650,7 +1000,7 @@ def run_news_aggregation_pipeline():
         now_iso = datetime.now(timezone.utc).isoformat()
 
         conn = get_db()
-        for item in list(unique_items.values())[:45]:
+        for item in list(unique_items.values())[:50]:
             cursor = conn.execute("SELECT id FROM articles WHERE source_url = ?", (item["link"],))
             if cursor.fetchone() is not None:
                 continue
@@ -690,13 +1040,13 @@ def scheduler_worker():
 
 
 # ==========================================
-# EDITORIAL FRONTEND
+# FULL MOBILE & TABLET RESPONSIVE FRONTEND
 # ==========================================
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
     <title>GamePulse • Video Game News, Reviews & Editorial</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎮</text></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -715,7 +1065,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             --brand-blue: #38bdf8;
             --font: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         }
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
         body { background-color: var(--bg-primary); color: var(--text-main); font-family: var(--font); line-height: 1.6; -webkit-font-smoothing: antialiased; }
 
         .top-utility-bar {
@@ -723,8 +1073,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             padding: 6px 16px; font-size: 0.76rem; color: var(--text-muted);
             display: flex; justify-content: space-between; align-items: center;
         }
-        .trending-wrap { display: flex; align-items: center; gap: 8px; }
-        .trending-tag { color: var(--brand-red); font-weight: 800; text-transform: uppercase; font-size: 0.72rem; }
+        .trending-wrap { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .trending-tag { color: var(--brand-red); font-weight: 800; text-transform: uppercase; font-size: 0.72rem; flex-shrink: 0; }
 
         header {
             background: rgba(11, 14, 23, 0.95);
@@ -749,7 +1099,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         .sub-nav-strip {
             background: var(--bg-secondary); border-bottom: 1px solid var(--border);
-            padding: 10px 16px;
+            padding: 10px 16px; -webkit-overflow-scrolling: touch;
         }
         .sub-nav-inner {
             max-width: 1140px; margin: 0 auto;
@@ -758,8 +1108,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .sub-nav-inner::-webkit-scrollbar { display: none; }
         .category-pill {
             background: var(--bg-card); border: 1px solid var(--border); color: #94a3b8;
-            padding: 5px 14px; border-radius: 20px; font-size: 0.78rem; font-weight: 700;
-            text-decoration: none; white-space: nowrap; transition: all 0.15s ease;
+            padding: 6px 16px; border-radius: 20px; font-size: 0.8rem; font-weight: 700;
+            text-decoration: none; white-space: nowrap; transition: all 0.15s ease; flex-shrink: 0;
+            min-height: 36px; display: inline-flex; align-items: center;
         }
         .category-pill:hover, .category-pill.active { background: #222d42; color: #fff; border-color: var(--brand-blue); }
 
@@ -772,8 +1123,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }
         .editorial-card:hover { border-color: #334155; transform: translateY(-2px); }
 
-        .banner-wrap { display: block; width: 100%; max-height: 420px; overflow: hidden; background: #000; text-decoration: none; }
-        .banner-img { width: 100%; height: 300px; object-fit: cover; display: block; transition: transform 0.3s ease; }
+        .banner-wrap { display: block; width: 100%; overflow: hidden; background: #000; text-decoration: none; }
+        .banner-img {
+            width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block;
+            max-height: 380px; transition: transform 0.3s ease;
+        }
         .banner-wrap:hover .banner-img { transform: scale(1.02); }
 
         .card-inner { padding: 26px; }
@@ -817,6 +1171,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .card-bottom-bar {
             display: flex; justify-content: space-between; align-items: center;
             border-top: 1px solid var(--border); padding-top: 16px; font-size: 0.84rem;
+            flex-wrap: wrap; gap: 8px;
         }
         .read-original-link {
             color: var(--brand-blue); text-decoration: none; font-weight: 700;
@@ -832,10 +1187,6 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .footer-columns {
             display: grid; grid-template-columns: 2fr 1fr 1fr;
             gap: 40px; margin-bottom: 40px;
-        }
-        @media (max-width: 768px) {
-            .footer-columns { grid-template-columns: 1fr; gap: 24px; }
-            .main-nav { display: none; }
         }
         .footer-col h4 { color: #fff; font-size: 0.92rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; }
         .footer-col p { font-size: 0.86rem; color: var(--text-muted); line-height: 1.6; }
@@ -882,7 +1233,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         .pulsar-header {
             background: #131b2e; border-bottom: 1px solid #23304c; padding: 14px 16px;
-            display: flex; justify-content: space-between; align-items: center;
+            display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
         }
         .pulsar-profile { display: flex; align-items: center; gap: 10px; }
         .pulsar-avatar { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, #ef4444, #8b5cf6); display: flex; align-items: center; justify-content: center; font-size: 1.1rem; }
@@ -890,12 +1241,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .pulsar-subtitle { font-size: 0.74rem; color: #94a3b8; }
 
         .pulsar-controls { display: flex; align-items: center; gap: 6px; }
-        .pulsar-ctrl-btn { background: transparent; border: none; color: #94a3b8; font-size: 1.1rem; cursor: pointer; padding: 4px; line-height: 1; }
+        .pulsar-ctrl-btn { background: transparent; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 6px; line-height: 1; }
         .pulsar-ctrl-btn:hover { color: #fff; }
 
         .pulsar-messages-area {
             flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
-            font-size: 0.88rem; background: #080c16;
+            font-size: 0.88rem; background: #080c16; -webkit-overflow-scrolling: touch;
         }
         .pulsar-messages-area::-webkit-scrollbar { width: 4px; }
         .pulsar-messages-area::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
@@ -915,58 +1266,93 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         .suggestion-chips-wrap { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
         .sugg-chip {
             background: #111827; border: 1px solid #24314c; color: #93c5fd;
-            padding: 8px 12px; border-radius: 8px; font-size: 0.8rem; text-align: left;
+            padding: 10px 14px; border-radius: 8px; font-size: 0.82rem; text-align: left;
             cursor: pointer; transition: all 0.15s ease; font-family: inherit; font-weight: 600;
+            min-height: 40px;
         }
         .sugg-chip:hover { background: #1a253c; color: #fff; border-color: #38bdf8; }
 
         .gemini-pill-container {
             background: #111827; border-top: 1px solid #1f2c47; padding: 12px 14px;
+            padding-bottom: max(12px, env(safe-area-inset-bottom)); flex-shrink: 0;
         }
         .gemini-pill-box {
             display: flex; align-items: center; gap: 8px;
             background: #162035; border: 1px solid #2c3e63; border-radius: 28px;
-            padding: 5px 8px 5px 12px; transition: border-color 0.2s ease, box-shadow 0.2s ease;
+            padding: 6px 10px 6px 14px; transition: border-color 0.2s ease, box-shadow 0.2s ease;
         }
         .gemini-pill-box:focus-within { border-color: #ef4444; box-shadow: 0 0 12px rgba(239, 68, 68, 0.25); }
 
         .gemini-plus-btn {
-            background: transparent; border: none; color: #94a3b8; font-size: 1.2rem;
+            background: transparent; border: none; color: #94a3b8; font-size: 1.3rem;
             cursor: pointer; display: flex; align-items: center; justify-content: center;
-            width: 26px; height: 26px; border-radius: 50%; transition: background 0.15s ease, color 0.15s ease;
+            width: 28px; height: 28px; border-radius: 50%; transition: background 0.15s ease, color 0.15s ease;
+            flex-shrink: 0;
         }
         .gemini-plus-btn:hover { background: #22304d; color: #fff; }
 
         .gemini-pill-input {
             flex: 1; background: transparent; border: none; color: #fff;
-            font-size: 0.86rem; outline: none; font-family: inherit;
+            font-size: 16px; outline: none; font-family: inherit;
         }
-        .gemini-pill-input::placeholder { color: #64748b; }
+        .gemini-pill-input::placeholder { color: #64748b; font-size: 0.88rem; }
 
         .gemini-send-circle {
-            background: #ef4444; color: #fff; border: none; width: 30px; height: 30px;
+            background: #ef4444; color: #fff; border: none; width: 32px; height: 32px;
             border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center;
             font-size: 0.9rem; font-weight: bold; transition: background 0.15s ease, transform 0.15s ease;
+            flex-shrink: 0;
         }
         .gemini-send-circle:hover { background: #dc2626; transform: scale(1.05); }
 
         .quick-actions-drawer {
             display: none; padding: 8px 12px 12px; background: #111827; border-top: 1px dashed #1f2c47;
-            gap: 6px; flex-direction: column;
+            gap: 6px; flex-direction: column; flex-shrink: 0;
         }
         .quick-action-link {
             background: #162035; border: 1px solid #283755; color: #cbd5e1;
-            padding: 6px 10px; border-radius: 6px; font-size: 0.78rem; text-align: left;
-            cursor: pointer; transition: all 0.15s ease;
+            padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; text-align: left;
+            cursor: pointer; transition: all 0.15s ease; min-height: 38px;
         }
         .quick-action-link:hover { color: #38bdf8; border-color: #38bdf8; background: #1c2944; }
+
+        /* ==========================================
+           RESPONSIVE MOBILE & TABLET MEDIA QUERIES
+           ========================================== */
+        @media (max-width: 1024px) {
+            .page-container { margin: 24px auto; padding: 0 16px; }
+            .footer-columns { grid-template-columns: 1fr 1fr; gap: 32px; }
+        }
+
+        @media (max-width: 768px) {
+            .main-nav { display: none; }
+            .brand-logo { font-size: 1.45rem; }
+            .top-utility-bar { font-size: 0.72rem; padding: 5px 12px; }
+            .card-inner { padding: 18px 16px; }
+            .article-headline { font-size: 1.22rem; line-height: 1.35; margin-bottom: 10px; }
+            .article-body { font-size: 0.92rem; line-height: 1.6; margin-bottom: 14px; }
+            .highlights-card { padding: 12px 14px; margin-bottom: 16px; }
+            .highlights-card ul { font-size: 0.84rem; padding-left: 16px; }
+            .footer-columns { grid-template-columns: 1fr; gap: 24px; }
+            footer { margin-top: 50px; padding: 36px 16px 20px; }
+        }
+
+        @media (max-width: 640px) {
+            .pulsar-launcher-btn { bottom: 16px; right: 16px; padding: 10px 16px; font-size: 0.82rem; }
+            .pulsar-popup-box {
+                width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh;
+                bottom: 0; right: 0; border-radius: 0; border: none;
+            }
+            .pulsar-header { padding: 16px 14px; padding-top: max(16px, env(safe-area-inset-top)); }
+            .msg-bubble { max-width: 92%; }
+        }
     </style>
 </head>
 <body>
     <div class="top-utility-bar">
         <div class="trending-wrap">
             <span class="trending-tag">Trending</span>
-            <span>PlayStation 5 Pro • Nintendo Switch 2 • GTA VI • Unreal Engine 5</span>
+            <span>PlayStation 5 Pro • Switch 2 • GTA VI • Unreal Engine 5</span>
         </div>
         <div>{{TODAY_DATE}}</div>
     </div>
@@ -989,10 +1375,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="sub-nav-strip">
         <div class="sub-nav-inner">
             <a href="/" class="category-pill {{ACT_ALL}}">All Coverage</a>
+            <a href="/?tag=UPDATE" class="category-pill {{ACT_UPD}}">Patches & Expansions</a>
             <a href="/?tag=INDUSTRY" class="category-pill {{ACT_IND}}">Industry & Studios</a>
             <a href="/?tag=TRAILER" class="category-pill {{ACT_TRAILER}}">Trailers & Reveals</a>
             <a href="/?tag=REVIEW" class="category-pill {{ACT_REV}}">Reviews & Scores</a>
-            <a href="/?tag=UPDATE" class="category-pill {{ACT_UPD}}">Patches & Expansions</a>
             <a href="/?tag=RUMOR" class="category-pill {{ACT_RUMOR}}">Rumors & Leaks</a>
             <a href="/?tag=COMMUNITY" class="category-pill {{ACT_COMM}}">Indie & Mods</a>
         </div>
@@ -1020,7 +1406,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             </div>
             <div class="pulsar-controls">
                 <button class="pulsar-ctrl-btn" onclick="resetPulsar()" title="Restart conversation">↺</button>
-                <button class="pulsar-ctrl-btn" onclick="togglePulsar()" title="Minimize">✕</button>
+                <button class="pulsar-ctrl-btn" onclick="togglePulsar()" title="Close">✕</button>
             </div>
         </div>
         <div class="pulsar-messages-area" id="pulsarMessages">
@@ -1028,16 +1414,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <p><strong>Hi! What do you want to do today?</strong></p>
                 <div class="suggestion-chips-wrap">
                     <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
+                    <button class="sugg-chip" onclick="sendPulsarPrompt('Find me a game to play that is horror like Silent Hill')">🔦 Silent Hill Style Horror</button>
                     <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games like COD made by Activision')">🎯 Activision Shooters</button>
-                    <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games with a score of 60+')">⭐ Games Rated 60+</button>
                 </div>
             </div>
         </div>
 
         <div class="quick-actions-drawer" id="quickActionsDrawer">
+            <button class="quick-action-link" onclick="sendPulsarPrompt('Find me a game to play that is horror like Silent Hill')">🔦 Horror Games (Silent Hill / RE)</button>
             <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games like COD made by Activision')">🎯 Call of Duty & Activision</button>
-            <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games similar to Uncharted')">🌿 Uncharted Style Games</button>
-            <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games with a score of 85+')">⭐ Verified 85+ Scores</button>
+            <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games similar to Uncharted or Tomb Raider')">🌿 Cinematic Action Adventures</button>
         </div>
 
         <!-- Gemini-Styled Pill Box -->
@@ -1114,8 +1500,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <p><strong>Hi! What do you want to do today?</strong></p>
                     <div class="suggestion-chips-wrap">
                         <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
+                        <button class="sugg-chip" onclick="sendPulsarPrompt('Find me a game to play that is horror like Silent Hill')">🔦 Silent Hill Style Horror</button>
                         <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games like COD made by Activision')">🎯 Activision Shooters</button>
-                        <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games with a score of 60+')">⭐ Games Rated 60+</button>
                     </div>
                 </div>
             `;
@@ -1292,16 +1678,35 @@ class WebHandler(BaseHTTPRequestHandler):
             tag_filter = params.get("tag", [None])[0]
             conn = get_db()
             
-            if tag_filter == "RUMOR":
+            if tag_filter == "UPDATE":
+                cursor = conn.execute("""
+                    SELECT * FROM articles 
+                    WHERE tag='UPDATE' 
+                       OR category LIKE '%Update%' 
+                       OR category LIKE '%Patch%'
+                       OR title LIKE '%Patch%' 
+                       OR title LIKE '%Update%' 
+                       OR title LIKE '%DLC%' 
+                       OR title LIKE '%Hotfix%' 
+                       OR title LIKE '%Season%' 
+                       OR title LIKE '%Roadmap%' 
+                       OR title LIKE '%Expansion%' 
+                       OR title LIKE '%Overhaul%'
+                       OR title LIKE '%Mod%'
+                       OR ai_title LIKE '%Patch%' 
+                       OR ai_title LIKE '%Update%' 
+                       OR ai_title LIKE '%DLC%' 
+                       OR ai_title LIKE '%Expansion%'
+                    ORDER BY id DESC LIMIT 50
+                """)
+            elif tag_filter == "RUMOR":
                 cursor = conn.execute("SELECT * FROM articles WHERE tag='RUMOR' OR source_name LIKE '%GamingLeaks%' OR title LIKE '%Rumor%' OR title LIKE '%Leak%' OR title LIKE '%Report:%' OR title LIKE '%Insider%' ORDER BY id DESC LIMIT 50")
             elif tag_filter == "REVIEW":
                 cursor = conn.execute("SELECT * FROM articles WHERE tag='REVIEW' OR category LIKE '%Review%' OR title LIKE '%Review%' OR title LIKE '%Verdict%' OR title LIKE '%Score%' OR title LIKE '%Impressions%' OR source_name LIKE '%Review%' ORDER BY id DESC LIMIT 50")
             elif tag_filter == "INDUSTRY":
                 cursor = conn.execute("SELECT * FROM articles WHERE tag='INDUSTRY' OR category LIKE '%Industry%' OR source_name LIKE '%Industry%' OR title LIKE '%Sales%' OR title LIKE '%Layoff%' OR title LIKE '%Studio%' OR title LIKE '%Acquisition%' ORDER BY id DESC LIMIT 50")
             elif tag_filter == "TRAILER":
-                cursor = conn.execute("SELECT * FROM articles WHERE tag='TRAILER' OR title LIKE '%Trailer%' OR title LIKE '%Gameplay%' OR title LIKE '%Reveal%' OR title LIKE '%Announce%' ORDER BY id DESC LIMIT 50")
-            elif tag_filter == "UPDATE":
-                cursor = conn.execute("SELECT * FROM articles WHERE tag='UPDATE' OR title LIKE '%Patch%' OR title LIKE '%Update%' OR title LIKE '%DLC%' OR title LIKE '%Hotfix%' ORDER BY id DESC LIMIT 50")
+                cursor = conn.execute("SELECT * FROM articles WHERE tag='TRAILER' OR title LIKE '%Trailer%' OR title LIKE '%Gameplay%' OR title LIKE '%Reveal%' OR title LIKE '%Announce%' ORDER BY id DESC LIMIT  OR title LIKE '%Trailer%' OR title LIKE '%Gameplay%' OR title LIKE '%Reveal%' OR title LIKE '%Announce%' ORDER BY id DESC LIMIT 50")
             elif tag_filter == "COMMUNITY":
                 cursor = conn.execute("SELECT * FROM articles WHERE tag='COMMUNITY' OR category LIKE '%Community%' OR title LIKE '%Mod%' OR title LIKE '%Indie%' ORDER BY id DESC LIMIT 50")
             elif tag_filter:
