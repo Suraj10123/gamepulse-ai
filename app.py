@@ -616,11 +616,9 @@ USER_SESSION_STATE = {
 def parse_query_filters(text):
     text_l = text.lower()
     
-    # Year extraction
     year_match = re.search(r'\b(202[0-9])\b', text_l)
     year = int(year_match.group(1)) if year_match else None
     
-    # Score extraction (e.g., "80+", "score 85", "rated 90+")
     score = None
     if re.search(r'\b([6-9][0-9])\s*\+', text_l):
         m = re.search(r'\b([6-9][0-9])\s*\+', text_l)
@@ -630,7 +628,6 @@ def parse_query_filters(text):
         if m:
             score = int(m.group(1))
             
-    # Platform extraction
     platform = None
     if re.search(r'\b(ps5|playstation\s*5|ps4|playstation|sony)\b', text_l):
         platform = 'PS5'
@@ -689,13 +686,11 @@ def generate_pulsar_response(user_message):
     
     matched_arch = match_archetype(msg_clean)
     
-    # If a new archetype is matched, update session and reset platform unless explicitly given
     if matched_arch:
         USER_SESSION_STATE["last_archetype_id"] = matched_arch["id"]
         USER_SESSION_STATE["last_platform"] = filters["platform"]
         active_platform = filters["platform"]
     else:
-        # Check if user is following up on a previous recommendation
         if USER_SESSION_STATE["last_archetype_id"]:
             matched_arch = ARCHETYPES_BY_ID.get(USER_SESSION_STATE["last_archetype_id"])
         if filters["platform"]:
@@ -709,13 +704,11 @@ def generate_pulsar_response(user_message):
     if matched_arch:
         games = list(matched_arch["games"])
         
-        # Apply platform filtering if requested
         if active_platform:
             filtered_games = [g for g in games if active_platform in g["platforms"]]
             if filtered_games:
                 games = filtered_games
                 
-        # Apply score filtering if requested
         if active_score:
             filtered_games = [g for g in games if g["score"] >= active_score]
             if filtered_games:
@@ -760,7 +753,6 @@ def generate_pulsar_response(user_message):
             if matches:
                 filtered.append((g, arch))
                 
-        # Sort by score descending
         filtered.sort(key=lambda x: x[0]["score"], reverse=True)
         
         if filtered:
@@ -813,7 +805,7 @@ def generate_pulsar_response(user_message):
 
 
 # ---------------------------------------------------------------------------
-# DATABASE INITIALIZATION & COLD-START SEED DATA
+# DATABASE INITIALIZATION & RECENT REVIEWS SEED DATA
 # ---------------------------------------------------------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -833,8 +825,63 @@ def init_db():
     """)
     conn.commit()
 
+    # Database cleanup: fix any previous misclassified rumors in REVIEW
+    cur.execute("""
+        UPDATE articles 
+        SET tag = 'RUMOR' 
+        WHERE tag = 'REVIEW' AND (
+            title LIKE '%unconfirmed%' OR 
+            title LIKE '%everything we know%' OR 
+            title LIKE '%rumor%' OR 
+            title LIKE '%leak%' OR 
+            title LIKE '%speculation%'
+        )
+    """)
+    # Remove older reviews from the active reviews list
+    cur.execute("DELETE FROM articles WHERE title LIKE '%Space Marine 2 Review%'")
+    conn.commit()
+
     # Pre-populate all tabs so no section is ever empty on startup
+    # Note: REVIEWS tab contains only newly released, highly rated games
     seed_articles = [
+        # REVIEW (Brand-new, recently reviewed game releases with verified scores)
+        ("Metaphor: ReFantazio Review: The Persona Team's Medieval Masterpiece",
+         "Studio Zero proves that modern turn-based fantasy RPGs can be lightning fast, emotionally profound, and mechanically limitless.",
+         "https://www.gamespot.com/reviews/metaphor-refantazio-review", "GameSpot", "REVIEW", "2026-10-05 14:30:00", 93,
+         "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=800&q=80"),
+        ("Astro Bot Review: Pure Platforming Nirvana on PlayStation 5",
+         "Team Asobi delivers one of the greatest 3D platformers in modern history, brimming with tactile DualSense joy and creative wonder.",
+         "https://www.ign.com/articles/astro-bot-review", "IGN", "REVIEW", "2026-10-05 14:15:00", 94,
+         "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?auto=format&fit=crop&w=800&q=80"),
+        ("Silent Hill 2 Remake Review: Fog-Drenched Masterpiece of Psychological Dread",
+         "Bloober Team honors Team Silent's classic with breathtaking Unreal Engine 5 fog, terrifying sound design, and emotional grief.",
+         "https://www.eurogamer.net/silent-hill-2-remake-review", "Eurogamer", "REVIEW", "2026-10-05 13:40:00", 86,
+         "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80"),
+        ("The Legend of Zelda: Echoes of Wisdom Review: Pure Creative Brilliance",
+         "Princess Zelda takes the lead in an inventive top-down adventure featuring Tri Rod replication mechanics, dungeon puzzles, and swordfighter mode.",
+         "https://www.ign.com/articles/zelda-echoes-of-wisdom-review", "IGN", "REVIEW", "2026-10-05 13:00:00", 86,
+         "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=800&q=80"),
+        ("Dragon Ball: Sparking! ZERO Review: The Ultimate High-Octane Anime Brawler",
+         "Spike Chunsoft resurrects the Budokai Tenkaichi franchise with lightning-fast 3D beam clashes and a gargantuan 180-character roster.",
+         "https://www.gamespot.com/reviews/dragon-ball-sparking-zero-review", "GameSpot", "REVIEW", "2026-10-05 12:20:00", 82,
+         "https://images.unsplash.com/photo-1578632767115-351597cf2477?auto=format&fit=crop&w=800&q=80"),
+        ("Call of Duty: Black Ops 6 Review: The Best Campaign and Gunplay in Years",
+         "Treyarch's innovative 360-degree Omnimovement elevates multiplayer gunfights alongside a thrilling espionage thriller campaign.",
+         "https://www.pcgamer.com/call-of-duty-black-ops-6-review", "PC Gamer", "REVIEW", "2026-10-05 11:50:00", 84,
+         "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=800&q=80"),
+        ("Frostpunk 2 Review: A Chilling, Masterful Society Survival Sequel",
+         "11 bit studios shifts from simple heat management to high-stakes political maneuvering, district zoning, and ethical winter crises.",
+         "https://www.pcgamer.com/frostpunk-2-review", "PC Gamer", "REVIEW", "2026-10-05 11:10:00", 86,
+         "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=800&q=80"),
+        ("Black Myth: Wukong Review: A Spectacular Mythological Action Triumph",
+         "Game Science creates an exhilarating Chinese folklore boss rush with fluid staff combat and breathtaking Unreal Engine 5 biomes.",
+         "https://www.eurogamer.net/black-myth-wukong-review", "Eurogamer", "REVIEW", "2026-10-05 10:20:00", 82,
+         "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80"),
+        ("Balatro Review: The Most Addictive Poker Roguelike Deckbuilder Ever Created",
+         "LocalThunk's hypnotic solo indie phenomenon transforms basic card hands into game-breaking multiplier cascades with endless replayability.",
+         "https://www.polygon.com/reviews/balatro-review", "Polygon", "REVIEW", "2026-10-05 09:30:00", 91,
+         "https://images.unsplash.com/photo-1563089145-599997674d42?auto=format&fit=crop&w=800&q=80"),
+
         # UPDATE / Patches & Expansions
         ("Diablo IV: Vessel of Hatred Major Balance Patch 2.0.3 Full Notes",
          "Blizzard releases extensive patch 2.0.3 tuning Spiritborn evade animations, boosting Torment dungeon drop rates, and fixing boss loot scaling.",
@@ -856,28 +903,6 @@ def init_db():
          "FromSoftware adjusts Scadutree fragment scaling curves and rebalances PvP weapon arts across the Realm of Shadow.",
          "https://en.bandainamcoent.eu/elden-ring/news/patch-1-14", "Bandai Namco", "UPDATE", "2026-10-05 10:20:00", 95,
          "https://images.unsplash.com/photo-1534423861386-85a16f5d13fd?auto=format&fit=crop&w=800&q=80"),
-
-        # REVIEW
-        ("Astro Bot Review: Pure Platforming Nirvana on PlayStation 5",
-         "Team Asobi delivers one of the greatest 3D platformers in modern history, brimming with tactile DualSense joy and creative wonder.",
-         "https://www.ign.com/articles/astro-bot-review", "IGN", "REVIEW", "2026-10-05 14:15:00", 94,
-         "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?auto=format&fit=crop&w=800&q=80"),
-        ("Metaphor: ReFantazio Review: The Persona Team's Medieval Masterpiece",
-         "Studio Zero proves that turn-based fantasy RPGs can be lightning fast, emotionally profound, and mechanically limitless.",
-         "https://www.gamespot.com/reviews/metaphor-refantazio-review", "GameSpot", "REVIEW", "2026-10-05 13:45:00", 93,
-         "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=800&q=80"),
-        ("Final Fantasy VII Rebirth Review: A Tremendous Open-World Triumph",
-         "Square Enix expands Cloud and Sephiroth's journey with staggering scale, deep Synergy party mechanics, and unforgettable music.",
-         "https://www.polygon.com/reviews/ff7-rebirth-review", "Polygon", "REVIEW", "2026-10-05 12:40:00", 92,
-         "https://images.unsplash.com/photo-1563089145-599997674d42?auto=format&fit=crop&w=800&q=80"),
-        ("Silent Hill 2 Remake Review: Fog-Drenched Masterpiece of Psychological Dread",
-         "Bloober Team honors Team Silent's classic with breathtaking Unreal Engine 5 fog, terrifying sound design, and emotional grief.",
-         "https://www.eurogamer.net/silent-hill-2-remake-review", "Eurogamer", "REVIEW", "2026-10-05 11:20:00", 86,
-         "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80"),
-        ("Warhammer 40,000: Space Marine 2 Review: Glorious Bloody Spectacle",
-         "Saber Interactive delivers a thunderous campaign featuring visceral bolter gunplay and chainsword melee against swarming Tyranids.",
-         "https://www.pcgamer.com/space-marine-2-review", "PC Gamer", "REVIEW", "2026-10-05 10:10:00", 83,
-         "https://images.unsplash.com/photo-1578632767115-351597cf2477?auto=format&fit=crop&w=800&q=80"),
 
         # TRAILER
         ("Grand Theft Auto VI Official Gameplay Showcase Breakdown & City Map Analysis",
@@ -912,6 +937,10 @@ def init_db():
          "https://images.unsplash.com/photo-1579373903781-fd5c0c30c4cd?auto=format&fit=crop&w=800&q=80"),
 
         # RUMOR
+        ("Uncharted 5: Everything We Know About The Unconfirmed Game",
+         "Naughty Dog's flagship adventure series reportedly in early prototype planning, with insider reports pointing to new protagonists.",
+         "https://www.gamespot.com/articles/uncharted-5-everything-we-know", "GameSpot", "RUMOR", "2026-10-05 14:35:00", 80,
+         "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80"),
         ("Insider Report: Resident Evil 9 Features Open Island Setting & Jill Valentine",
          "Prominent Capcom leaker reveals codename 'Apocalypse' with dual perspectives, snowy forestry, and biological terror.",
          "https://insider-gaming.com/resident-evil-9-details-leaked", "Insider Gaming", "RUMOR", "2026-10-05 14:20:00", 82,
@@ -955,7 +984,7 @@ def init_db():
 
 
 # ---------------------------------------------------------------------------
-# RSS FEED AGGREGATION PIPELINE
+# RSS FEED AGGREGATION PIPELINE (STRICT CATEGORIZATION)
 # ---------------------------------------------------------------------------
 FEEDS = [
     {"source": "PC Gamer", "url": "https://www.pcgamer.com/rss/", "default_tag": "ALL"},
@@ -966,20 +995,35 @@ FEEDS = [
 ]
 
 def categorize_article(title, summary):
-    text = (title + " " + summary).lower()
-    if any(k in text for k in ["patch", "hotfix", "update", "dlc", "expansion", "changelog", "release notes", "fixes", "balance"]):
-        return "UPDATE"
-    if any(k in text for k in ["review", "scored", "verdict", "verdict:", "impressions", "hands-on"]):
-        return "REVIEW"
-    if any(k in text for k in ["trailer", "teaser", "gameplay reveal", "showcase", "launch trailer", "cinematic trailer"]):
-        return "TRAILER"
-    if any(k in text for k in ["rumor", "leak", "reportedly", "insider", "spotted", "speculation"]):
-        return "RUMOR"
-    if any(k in text for k in ["industry", "layoff", "acquisition", "studio", "ceo", "sales", "earnings", "patent", "lawsuit"]):
-        return "INDUSTRY"
-    if any(k in text for k in ["indie", "mod", "modding", "early access", "demo", "steam next fest", "roguelite"]):
-        return "INDIE"
-    return "ALL"
+    t_clean = title.strip().lower()
+    s_clean = summary.strip().lower()
+
+    # 1. RUMOR checks first (higher priority to prevent rumors polluting Reviews)
+    if any(k in t_clean for k in ['rumor', 'leak', 'unconfirmed', 'everything we know', 'reportedly', 'insider', 'spotted', 'speculation', 'tease']):
+        return 'RUMOR'
+
+    # 2. UPDATE / Patches & DLC
+    if any(k in t_clean for k in ['patch', 'hotfix', 'update', 'dlc', 'expansion', 'changelog', 'release notes']) or \
+       (any(k in t_clean for k in ['fixes', 'balance', 'notes']) and any(k in s_clean for k in ['patch', 'update', 'hotfix', 'dlc'])):
+        return 'UPDATE'
+
+    # 3. REVIEW (Strict: must have word 'review' or 'verdict' in the TITLE itself, not merely mentioned in summary)
+    if re.search(r'\b(review|reviewed|verdict)\b', t_clean):
+        return 'REVIEW'
+
+    # 4. TRAILER
+    if any(k in t_clean for k in ['trailer', 'teaser', 'gameplay reveal', 'gameplay showcase', 'launch trailer', 'cinematic trailer']):
+        return 'TRAILER'
+
+    # 5. INDUSTRY
+    if any(k in t_clean for k in ['layoff', 'acquisition', 'studio', 'ceo', 'sales', 'earnings', 'patent', 'lawsuit', 'consolidation', 'hardware', 'financial']):
+        return 'INDUSTRY'
+
+    # 6. INDIE & MODS
+    if any(k in t_clean for k in ['indie', 'mod', 'modding', 'early access', 'demo', 'steam next fest', 'solo dev']):
+        return 'INDIE'
+
+    return 'ALL'
 
 def extract_image_url(item_xml):
     for elem in item_xml:
@@ -1208,7 +1252,7 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GamePulse AI | Live Gaming Intelligence & Pulsar Concierge</title>
+    <title>GamePulse AI | Live Gaming Intelligence & Reviews</title>
     <style>
         :root {{
             --bg-main: #0b0e14;
@@ -1231,6 +1275,7 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             min-height: 100vh;
             display: flex;
             flex-direction: column;
+            position: relative;
         }}
         header {{
             background: rgba(15, 22, 34, 0.95);
@@ -1239,7 +1284,7 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             position: sticky;
             top: 0;
             z-index: 100;
-            padding: 0.8rem 1.5rem;
+            padding: 0.9rem 1.5rem;
         }}
         .header-wrap {{
             max-width: 1300px;
@@ -1282,7 +1327,7 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             background: #0f1724;
             border: 1px solid var(--border-col);
             border-radius: 20px;
-            padding: 4px 12px;
+            padding: 5px 14px;
         }}
         .search-box input {{
             background: transparent;
@@ -1291,26 +1336,7 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             color: #fff;
             font-size: 0.85rem;
             padding: 4px;
-            width: 180px;
-        }}
-        .chat-btn {{
-            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
-            color: #fff;
-            border: none;
-            padding: 0.5rem 1rem;
-            border-radius: 20px;
-            font-weight: 700;
-            font-size: 0.85rem;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            box-shadow: 0 4px 15px rgba(0, 242, 254, 0.25);
-            transition: all 0.2s ease;
-        }}
-        .chat-btn:hover {{
-            transform: translateY(-1px);
-            box-shadow: 0 6px 20px rgba(0, 242, 254, 0.4);
+            width: 220px;
         }}
         .tab-bar {{
             background: #0e141f;
@@ -1457,23 +1483,57 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             grid-column: 1 / -1;
         }}
 
-        /* MODAL / CHAT DRAWER */
+        /* FLOATING ACTION BUTTON AT BOTTOM RIGHT CORNER (ORIGINAL DESIGN) */
+        .pulsar-fab {{
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            color: #fff;
+            border: none;
+            border-radius: 30px;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+            font-weight: 700;
+            font-size: 0.95rem;
+            box-shadow: 0 8px 25px rgba(0, 242, 254, 0.4);
+            z-index: 999;
+            transition: all 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }}
+        .pulsar-fab:hover {{
+            transform: translateY(-3px) scale(1.03);
+            box-shadow: 0 12px 30px rgba(0, 242, 254, 0.6);
+        }}
+        .pulsar-fab-icon {{
+            font-size: 1.2rem;
+            line-height: 1;
+        }}
+
+        /* PULSAR CHAT DRAWER (ANCHORED TO BOTTOM RIGHT) */
         .chat-drawer {{
             position: fixed;
-            bottom: 20px;
-            right: 20px;
+            bottom: 80px;
+            right: 24px;
             width: 440px;
             max-width: calc(100vw - 40px);
             height: 600px;
-            max-height: calc(100vh - 60px);
+            max-height: calc(100vh - 100px);
             background: #111722;
             border: 1px solid var(--border-col);
             border-radius: 16px;
             display: none;
             flex-direction: column;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
+            box-shadow: 0 15px 45px rgba(0, 0, 0, 0.75);
             z-index: 1000;
             overflow: hidden;
+            animation: drawerFadeIn 0.2s ease-out;
+        }}
+        @keyframes drawerFadeIn {{
+            from {{ opacity: 0; transform: translateY(10px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
         }}
         .chat-header {{
             background: #161e2e;
@@ -1608,13 +1668,9 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             </a>
             <div class="search-box">
                 <form action="/" method="GET">
-                    <input type="text" name="q" placeholder="Search news or games..." value="{html.escape(search_kw)}">
+                    <input type="text" name="q" placeholder="Search news, reviews, games..." value="{html.escape(search_kw)}">
                 </form>
             </div>
-            <button class="chat-btn" onclick="toggleChat()">
-                <span>⚡</span>
-                <span>Ask Pulsar AI</span>
-            </button>
         </div>
     </header>
 
@@ -1629,6 +1685,12 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             {cards_html}
         </div>
     </main>
+
+    <!-- FLOATING ACTION BUTTON AT BOTTOM RIGHT CORNER (ORIGINAL DESIGN) -->
+    <button class="pulsar-fab" onclick="toggleChat()" id="pulsarFab">
+        <span class="pulsar-fab-icon">⚡</span>
+        <span>Ask Pulsar</span>
+    </button>
 
     <!-- PULSAR AI CONCIERGE DRAWER -->
     <div class="chat-drawer" id="chatDrawer">
