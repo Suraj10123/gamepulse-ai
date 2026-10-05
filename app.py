@@ -1,1584 +1,1156 @@
-#!/usr/bin/env python3
 """
-GamePulse - Video Game News, Reviews & Editorial Digest
-Omni-Category Live Ingestion • Multi-Turn Memory • 20-Genre Pulsar AI
-Zero External Dependencies (Pure Python Standard Library)
+GamePulse AI - Live Video Game News Digest, Review Aggregator & Pulsar AI Concierge
+Zero external Python dependencies (Standard Library Only: http.server, sqlite3, urllib, difflib, xml)
 """
 
-import os
-import sys
-import time
-import json
-import sqlite3
-import threading
+import http.server
+import socketserver
 import urllib.request
 import urllib.parse
-import xml.etree.ElementTree as ET
+import sqlite3
+import threading
+import time
+import json
 import re
-import email.utils
-import ssl
-from datetime import datetime, timezone, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import html
+import os
+import sys
+import xml.etree.ElementTree as ET
+import datetime
+import difflib
 
-# ==========================================
-# AUTO-LOAD .ENV FILE
-# ==========================================
-env_path = os.path.join(os.path.dirname(__file__), ".env")
-if os.path.exists(env_path):
-    with open(env_path, "r", encoding="utf-8-sig") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+PORT = int(os.environ.get("PORT", 10000))
+DB_PATH = os.environ.get("DB_PATH", "gamepulse.db")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-# ==========================================
-# CONFIGURATION & SETTINGS
-# ==========================================
-PORT = int(os.environ.get("PORT", 8080))
-DB_FILE = os.environ.get("DB_FILE", "gaming_news.db")
-REFRESH_INTERVAL_MINUTES = int(os.environ.get("REFRESH_MINUTES", 15))
-MAX_ARTICLE_AGE_DAYS = 30  # Allow up to 30 days of active coverage
-
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip().strip("'\"")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
-GITHUB_REPO_URL = os.environ.get("GITHUB_URL", "https://github.com/Suraj10123/gamepulse-ai")
-
-# Comprehensive Live Feeds Across All Editorial Sections
-FEEDS = [
-    # 1. Dedicated Live Reviews & Scores
-    {"name": "IGN Reviews", "url": "https://feeds.feedburner.com/ign/reviews-all", "category": "Reviews", "default_tag": "REVIEW"},
-    {"name": "GameSpot Reviews", "url": "https://www.gamespot.com/feeds/reviews/", "category": "Reviews", "default_tag": "REVIEW"},
-    {"name": "Eurogamer Reviews", "url": "https://www.eurogamer.net/feed/reviews", "category": "Reviews", "default_tag": "REVIEW"},
-    {"name": "Push Square Reviews", "url": "https://www.pushsquare.com/reviews.rss", "category": "Reviews", "default_tag": "REVIEW"},
-    {"name": "Nintendo Life Reviews", "url": "https://www.nintendolife.com/reviews.rss", "category": "Reviews", "default_tag": "REVIEW"},
-
-    # 2. Dedicated Live Industry News & Financials
-    {"name": "GamesIndustry.biz", "url": "https://www.gamesindustry.biz/feed", "category": "Industry", "default_tag": "INDUSTRY"},
-
-    # 3. Dedicated Live Patches, Updates & Expansions
-    {"name": "PC Gamer Updates", "url": "https://www.pcgamer.com/rss/", "category": "Updates & DLC", "default_tag": "UPDATE"},
-    {"name": "Rock Paper Shotgun", "url": "https://www.rockpapershotgun.com/feed", "category": "Updates & DLC", "default_tag": "UPDATE"},
-    {"name": "r/pcgaming Updates", "url": "https://www.reddit.com/r/pcgaming/.rss?limit=25", "category": "Updates & DLC", "default_tag": "UPDATE"},
-
-    # 4. Rumors, Leaks & Industry Scoops
-    {"name": "r/GamingLeaksAndRumours", "url": "https://www.reddit.com/r/GamingLeaksAndRumours/.rss?limit=25", "category": "Rumors", "default_tag": "RUMOR"},
-    {"name": "VGC", "url": "https://www.videogameschronicle.com/feed/", "category": "Rumors & Scoops", "default_tag": "RUMOR"},
-
-    # 5. Announcements, Trailers & Community
-    {"name": "Gematsu", "url": "https://www.gematsu.com/feed", "category": "Announcements", "default_tag": "TRAILER"},
-    {"name": "Polygon", "url": "https://www.polygon.com/rss/index.xml", "category": "General", "default_tag": "NEWS"},
-    {"name": "r/Games", "url": "https://www.reddit.com/r/Games/.rss?limit=25", "category": "Community", "default_tag": "COMMUNITY"}
-]
-
-DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-# Curated High-Signal Seed Articles Across All Categories
-SEED_ARTICLES = [
-    # REVIEWS & SCORES
+# ---------------------------------------------------------------------------
+# 32 ALL-ENCOMPASSING GENRE & SPECIFIC GAME ARCHETYPES
+# ---------------------------------------------------------------------------
+ALL_ARCHETYPES = [
     {
-        "title": "Astro Bot Review - A Joyous 3D Platforming Masterpiece on PS5",
-        "ai_title": "Astro Bot Review: The Benchmark for Modern 3D Platformers",
-        "summary": "Team Asobi delivers a platforming masterpiece on PlayStation 5, celebrating 30 years of PlayStation heritage with inventive level gimmicks, flawless kinematic controls, and unmatched DualSense haptic feedback. OpenCritic rating: 94 (Mighty Tier).",
-        "key_takeaways": json.dumps([
-            "Benchmark 3D platforming level design rivaling Super Mario Galaxy.",
-            "Inventive integration of DualSense adaptive triggers and motion controls.",
-            "Over 150 VIP Bot cameos from classic and modern gaming history."
-        ]),
-        "category": "Reviews", "tag": "REVIEW", "source_name": "IGN Reviews",
-        "source_url": "https://www.ign.com/articles/astro-bot-review",
-        "image_url": "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Positive"
+        "id": "action_rpg_loot",
+        "title": "Action RPGs & Isometric Loot Crawlers (Diablo Archetype)",
+        "icon": "⚔️",
+        "keywords": [
+            "diablo", "diablo 4", "diablo iv", "diablo 2", "diablo ii", "diablo 3", "path of exile", "poe", "poe 2",
+            "last epoch", "grim dawn", "titan quest", "torchlight", "van helsing", "dungeon crawler",
+            "loot arpg", "isometric arpg", "hack and slash loot", "arpg"
+        ],
+        "description": "Demon slaying, deep passive skill trees, theorycrafting, and dopamine-fueled legendary loot showers.",
+        "games": [
+            {"title": "Path of Exile 2", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 90, "desc": "Unrivaled gem-socketing skill trees, dark 6-act campaign, and fluid dodge-roll twin-stick console combat."},
+            {"title": "Diablo IV: Vessel of Hatred", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 85, "desc": "Visceral dark fantasy combat featuring the martial-arts Spiritborn class and Nahantu jungle."},
+            {"title": "Last Epoch", "platforms": ["PC"], "year": 2024, "score": 82, "desc": "Time-travel masteries, full offline play support, and an intuitive in-game customizable loot filter."},
+            {"title": "Diablo II: Resurrected", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2021, "score": 83, "desc": "The timeless gold standard of gothic ARPGs with iconic runewords, potion management, and classic dark atmosphere."},
+            {"title": "Grim Dawn", "platforms": ["PC", "Xbox"], "year": 2016, "score": 83, "desc": "Dual-class mastery combinations, celestial devotion constellations, and deep mod support."}
+        ]
     },
     {
-        "title": "Final Fantasy VII Rebirth Review - Monumental Open-World JRPG Triumph",
-        "ai_title": "Final Fantasy VII Rebirth Review: A Landmark Action-RPG Achievement",
-        "summary": "Square Enix expands the journey beyond Midgar into a breathtaking open-world adventure. Featuring deep Synergy ability combat, expansive regional exploration, and an unforgettable rendition of classic story beats. OpenCritic rating: 92.",
-        "key_takeaways": json.dumps([
-            "Dynamic party synergy attacks elevate active-time combat to new heights.",
-            "Vast, secrets-filled open regions with varied traversal mechanics.",
-            "Deep Queen's Blood card minigame and rich character banter."
-        ]),
-        "category": "Reviews", "tag": "REVIEW", "source_name": "GameSpot Reviews",
-        "source_url": "https://www.gamespot.com/reviews/final-fantasy-7-rebirth-review/1900-6418182/",
-        "image_url": "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Positive"
+        "id": "cover_shooter",
+        "title": "Cover-Based Third-Person Tactical Shooters (Gears of War Archetype)",
+        "icon": "🛡️",
+        "keywords": [
+            "gears of war", "gears", "gears 5", "gears of war e-day", "cover shooter", "third person shooter",
+            "third-person shooter", "tps", "binary domain", "spec ops", "spec ops the line", "army of two",
+            "outriders", "vanquish", "space marine", "warhammer space marine", "division", "the division", "division 2"
+        ],
+        "description": "Chest-high wall tactility, active reloads, heavy squad weapons, and aggressive fire-and-flank maneuvers.",
+        "games": [
+            {"title": "Warhammer 40,000: Space Marine 2", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 83, "desc": "Crushing third-person boltgun firing seamlessly blended with brutal chainsword melee against Tyranid swarms."},
+            {"title": "Gears 5 / Gears of War: E-Day", "platforms": ["PC", "Xbox"], "year": 2024, "score": 84, "desc": "The benchmark for cover sliding, active reloads, chainsaw lancers, and visceral campaign co-op."},
+            {"title": "Remnant 2", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 85, "desc": "'Gears meets Dark Souls' third-person gunplay with procedurally generated puzzle realms and archetypes."},
+            {"title": "The Division 2", "platforms": ["PC", "PS5", "Xbox"], "year": 2019, "score": 82, "desc": "Tight urban cover-to-cover flanking, tactical drone gadgets, and squad synergy in Washington D.C."},
+            {"title": "Vanquish", "platforms": ["PC", "PS5", "Xbox"], "year": 2017, "score": 84, "desc": "PlatinumGames' rocket-boosted slide-shooting masterpiece with frantic bullet-time action."}
+        ]
     },
     {
-        "title": "Silent Hill 2 Remake Review - Atmospheric Psychological Horror Reborn",
-        "ai_title": "Silent Hill 2 Remake Review: Fog, Dread, and Masterful Sound Design",
-        "summary": "Bloober Team and Konami deliver a faithful, deeply unsettling Unreal Engine 5 reconstruction of James Sunderland's nightmare. Modernized over-the-shoulder perspective, suffocating volumetric fog, and Akira Yamaoka's iconic score shine. OpenCritic rating: 86.",
-        "key_takeaways": json.dumps([
-            "Unreal Engine 5 volumetric fog and lighting create relentless dread.",
-            "Tactile combat overhaul balances vulnerability with deliberate feedback.",
-            "Expanded puzzle rooms and nuanced character performances."
-        ]),
-        "category": "Reviews", "tag": "REVIEW", "source_name": "Eurogamer Reviews",
-        "source_url": "https://www.eurogamer.net/silent-hill-2-remake-review",
-        "image_url": "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Positive"
-    },
-
-    # INDUSTRY & STUDIOS
-    {
-        "title": "Sony Announces PlayStation 5 Pro with Enhanced GPU, PSSR Upscaling and 2TB SSD",
-        "ai_title": "Sony Unveils PS5 Pro: Technical Architecture and 60FPS Fidelity Vision",
-        "summary": "Lead architect Mark Cerny revealed the PlayStation 5 Pro console, featuring 67% more Compute Units, advanced ray tracing hardware, and PlayStation Spectral Super Resolution (PSSR) machine learning upscaling.",
-        "key_takeaways": json.dumps([
-            "Upgraded GPU delivers 45% faster rendering performance for demanding titles.",
-            "PSSR AI-driven upscaling boosts fidelity while maintaining 60FPS target.",
-            "Standard 2TB high-speed NVMe storage and Wi-Fi 7 wireless connectivity."
-        ]),
-        "category": "Industry", "tag": "INDUSTRY", "source_name": "GamesIndustry.biz",
-        "source_url": "https://www.gamesindustry.biz/sony-unveils-playstation-5-pro",
-        "image_url": "https://images.unsplash.com/photo-1606813907291-d86efa9b94db?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Neutral"
-    },
-
-    # TRAILERS & REVEALS
-    {
-        "title": "Ghost of Yotei Revealed - Sucker Punch Showcases Feudal Japan Successor",
-        "ai_title": "Ghost of Yotei: New Protagonist Atsu and Hokkaido Setting Detailed",
-        "summary": "Sucker Punch Productions revealed Ghost of Yotei, set in 1603 around the base of Mount Yotei in northern Japan. Introducing new protagonist Atsu, dual-wielding katanas, firearms, and sprawling wilderness biomes.",
-        "key_takeaways": json.dumps([
-            "Takes place 300 years after Ghost of Tsushima in rugged northern Ezo.",
-            "New weapon arsenal includes dual katanas, kusarigama, and early firearms.",
-            "Built from the ground up to take native advantage of PS5 visual hardware."
-        ]),
-        "category": "Announcements", "tag": "TRAILER", "source_name": "Gematsu",
-        "source_url": "https://www.gematsu.com/2024/09/ghost-of-yotei-announced-for-ps5",
-        "image_url": "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Positive"
-    },
-
-    # PATCHES, EXPANSIONS & DLC
-    {
-        "title": "Baldur's Gate 3 Patch 7 Launches with Official Mod Manager and 13 Evil Endings",
-        "ai_title": "Baldur's Gate 3: Patch 7 Modding Toolkit & Cinematic Endings Breakdown",
-        "summary": "Larian Studios has deployed Patch 7 for Baldur's Gate 3, introducing the integrated in-game mod manager, official modding tools, and 13 newly scored cinematic endings for evil playthroughs. The update also overhauls dynamic split-screen co-op mechanics.",
-        "key_takeaways": json.dumps([
-            "Official in-game Mod Manager and mod authoring toolkit now live across all platforms.",
-            "13 brand-new cinematic evil endings with unique cutscenes and custom musical scores.",
-            "Dynamic split-screen co-op seamlessly merges viewports when characters are nearby."
-        ]),
-        "category": "Updates & DLC", "tag": "UPDATE", "source_name": "PC Gamer Updates",
-        "source_url": "https://store.steampowered.com/news/app/1086940/view/4260047716942440871",
-        "image_url": "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Positive"
+        "id": "superhero_openworld",
+        "title": "Superhero & Acrobatic Open-World Action (Spider-Man & Prototype Archetype)",
+        "icon": "🕸️",
+        "keywords": [
+            "spider-man", "spiderman", "spider man", "spider-man 2", "prototype", "prototype 2", "infamous",
+            "infamous second son", "batman arkham", "arkham city", "arkham knight", "sunset overdrive",
+            "superhero", "city traversal", "web swinging", "biomass", "shape shifting", "superpowers"
+        ],
+        "description": "High-velocity city traversal, freeflow acrobatic combat, superpower mastery, and urban playground destruction.",
+        "games": [
+            {"title": "Marvel's Spider-Man 2", "platforms": ["PS5", "PC"], "year": 2023, "score": 90, "desc": "Near-instant switching between Peter and Miles, Symbiote tendril attacks, Web Wings gliding, and cinematic NYC spectacle."},
+            {"title": "Prototype 2", "platforms": ["PC", "PS4", "Xbox"], "year": 2012, "score": 79, "desc": "Unchecked viral destruction, vertical skyscraper sprinting, blade-arm mutations, and tank hijacking in New York Zero."},
+            {"title": "inFamous: Second Son", "platforms": ["PS5", "PS4"], "year": 2014, "score": 80, "desc": "Delsin Rowe dashing through Seattle rooftops with smoke, neon, and video superpowers."},
+            {"title": "Batman: Arkham Knight", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2015, "score": 87, "desc": "The ultimate predatory caped crusader simulator with freeflow rhythm combat and Batmobile combat."},
+            {"title": "Sunset Overdrive", "platforms": ["PC", "Xbox"], "year": 2014, "score": 81, "desc": "Insomniac's kinetic rail-grinding, vinyl-launching punk-rock open-world playground."}
+        ]
     },
     {
-        "title": "Diablo IV: Vessel of Hatred Expansion Overhauls Progression & Adds Spiritborn Class",
-        "ai_title": "Diablo IV: Vessel of Hatred Expansion & Level Cap Overhaul",
-        "summary": "Blizzard's Vessel of Hatred expansion launches alongside a systemic rework of Diablo IV. The expansion introduces the Nahantu jungle region, the martial arts Spiritborn class, Runewords itemization, and resets the core level cap to 60.",
-        "key_takeaways": json.dumps([
-            "New Spiritborn class utilizing Centipede, Gorilla, Eagle, and Jaguar combat spirits.",
-            "Runewords crafting system returns to enable customized skill triggers and defensive utility.",
-            "Progression squish sets base level cap to 60 with 300 account-wide Paragon levels."
-        ]),
-        "category": "Updates & DLC", "tag": "UPDATE", "source_name": "PC Gamer Updates",
-        "source_url": "https://news.blizzard.com/en-us/diablo4/24141676/vessel-of-hatred-launch-details",
-        "image_url": "https://images.unsplash.com/photo-1538481199705-c710c4e965fc?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Positive"
+        "id": "soulslike_jedi",
+        "title": "Soulslike, Precision Combat & Metroidvania (Star Wars Jedi & Souls)",
+        "icon": "🗡️",
+        "keywords": [
+            "star wars jedi", "jedi fallen order", "jedi survivor", "fallen order", "jedi", "cal kestis",
+            "souls", "soulslike", "dark souls", "elden ring", "sekiro", "bloodborne", "lies of p",
+            "black myth wukong", "wukong", "lords of the fallen", "hollow knight", "blasphemous", "nioh"
+        ],
+        "description": "Deflection parries, stamina discipline, interconnected 3D shortcuts, and punishing high-stakes boss battles.",
+        "games": [
+            {"title": "Star Wars Jedi: Survivor", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 85, "desc": "5 distinct lightsaber stances (Blaster, Crossguard, Dual), expansive Metroidvania planetary traversal, and Force mastery."},
+            {"title": "Elden Ring: Shadow of the Erdtree", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 95, "desc": "FromSoftware's pinnacle of open-world dark fantasy, intricate multi-layered legacy dungeons, and punishing boss encounters."},
+            {"title": "Black Myth: Wukong", "platforms": ["PC", "PS5"], "year": 2024, "score": 82, "desc": "Destined One staff mechanics, 72 earthly transformations, and stunning Unreal Engine 5 mythological spectacle."},
+            {"title": "Lies of P", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 84, "desc": "Belle Époque puppet dark fantasy featuring razor-sharp perfect guard parries and customizable Legion arms."},
+            {"title": "Sekiro: Shadows Die Twice", "platforms": ["PC", "PS4", "Xbox"], "year": 2019, "score": 90, "desc": "The undisputed gold standard of rhythm-action posture breaking and grapple-hook stealth."}
+        ]
     },
-
-    # RUMORS & SCOOPS
     {
-        "title": "Insider Report: FromSoftware Developing Unannounced Dark Fantasy IP with Sony",
-        "ai_title": "FromSoftware Rumor: New Dark Fantasy Action RPG in Production",
-        "summary": "Industry reports suggest FromSoftware is collaborating on an unannounced original dark fantasy action RPG under director Hidetaka Miyazaki, featuring faster-paced combat mechanics distinct from Elden Ring.",
-        "key_takeaways": json.dumps([
-            "New standalone dark fantasy IP planned rather than a direct sequel.",
-            "Emphasizes tight, rhythmic parry-and-deflection combat.",
-            "Targeted for high-end console and PC release cycle."
-        ]),
-        "category": "Rumors", "tag": "RUMOR", "source_name": "r/GamingLeaksAndRumours",
-        "source_url": "https://www.reddit.com/r/GamingLeaksAndRumours/comments/fromsoftware_new_ip",
-        "image_url": "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Neutral"
+        "id": "fast_fps",
+        "title": "Military & Fast Arcade First-Person Shooters (Call of Duty Archetype)",
+        "icon": "🎯",
+        "keywords": [
+            "call of duty", "cod", "call of dury", "black ops", "modern warfare", "warzone", "battlefield",
+            "titanfall", "titanfall 2", "medal of honor", "halo", "the finals", "arcade shooter", "military shooter"
+        ],
+        "description": "Lightning twitch aim, 360-degree omnidirectional movement, in-depth gunsmithing, and blockbuster set-pieces.",
+        "games": [
+            {"title": "Call of Duty: Black Ops 6", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 84, "desc": "Groundbreaking 360-degree Omnimovement (sprint/slide/dive any direction), Treyarch round-based zombies, and spy campaign."},
+            {"title": "Titanfall 2", "platforms": ["PC", "PS5", "Xbox"], "year": 2016, "score": 89, "desc": "Created by Infinity Ward founders, combining wall-running momentum with giant Titan drop combat."},
+            {"title": "The Finals", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 80, "desc": "Total real-time environmental destruction, game-show flair, and high-mobility team objective shootouts."},
+            {"title": "Halo Infinite", "platforms": ["PC", "Xbox"], "year": 2021, "score": 87, "desc": "Golden-triangle arena shooting perfected with grapple-shot physics and wide Master Chief ring sandbox."},
+            {"title": "Trepang2", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 79, "desc": "A spiritual successor to F.E.A.R. featuring slow-mo bullet time, dual-wield shotguns, and visceral gore."}
+        ]
     },
-
-    # COMMUNITY & INDIE
     {
-        "title": "Fallout: London Massive Total Conversion Mod Surpasses 1 Million Downloads",
-        "ai_title": "Community Milestone: Fallout London Achieves Historic Modding Success",
-        "summary": "Team FOLON's total conversion mod Fallout: London has surpassed one million downloads via GOG. Featuring a completely new post-apocalyptic British wasteland, full professional voice acting, and 90 hours of questlines.",
-        "key_takeaways": json.dumps([
-            "Fastest-redeemed independent game modification in digital storefront history.",
-            "Complete overhaul with original factions, authentic London boroughs, and music.",
-            "Demonstrates the power of independent PC modding communities."
-        ]),
-        "category": "Community", "tag": "COMMUNITY", "source_name": "r/Games",
-        "source_url": "https://www.reddit.com/r/Games/comments/fallout_london_one_million",
-        "image_url": "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Positive"
+        "id": "boomer_shooter",
+        "title": "Boomer Shooters & Heavy Arena Movement FPS (Doom Archetype)",
+        "icon": "💥",
+        "keywords": [
+            "doom", "doom eternal", "doom the dark ages", "boomer shooter", "retro shooter", "ultrakill",
+            "quake", "dusk", "prodeus", "turbo overkill", "boltgun", "warhammer boltgun", "movement shooter",
+            "fast fps", "arena shooter", "strafe jumping", "bunny hopping"
+        ],
+        "description": "Non-stop velocity, weapon wheel swapping, heavy metal soundtracks, and hordes of demons.",
+        "games": [
+            {"title": "Doom: The Dark Ages / Doom Eternal", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 88, "desc": "The chainsaw shield, flail, and heavy shotguns delivering the definitive violent 'push-forward combat' loop."},
+            {"title": "ULTRAKILL", "platforms": ["PC"], "year": 2024, "score": 92, "desc": "Blood-fueled health regeneration, coin ricochets, and Devil May Cry style ratings inside an adrenaline FPS."},
+            {"title": "Turbo Overkill", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2023, "score": 86, "desc": "Cyberpunk chainsaw-leg slide attacks, wall-running, and ridiculous retro rocket explosions."},
+            {"title": "Warhammer 40,000: Boltgun", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2023, "score": 81, "desc": "Sprite-based 90s aesthetic with modern physics, devastating boltgun feedback, and Chaos cultist gibs."},
+            {"title": "Dusk", "platforms": ["PC", "Switch", "PS4"], "year": 2018, "score": 88, "desc": "Classic Quake/Blood vibes with dual sickles, hunting rifles, and master-class level design."}
+        ]
+    },
+    {
+        "id": "tactical_turn_based",
+        "title": "Tactical Grid Strategy & Turn-Based RPGs (Fire Emblem & XCOM)",
+        "icon": "♟️",
+        "keywords": [
+            "fire emblem", "fire emblem engage", "three houses", "xcom", "xcom 2", "tactics ogre",
+            "triangle strategy", "final fantasy tactics", "midnight suns", "jagged alliance", "unicorn overlord",
+            "tactical rpg", "turn based strategy", "grid strategy", "permadeath", "strategy rpg", "srpg"
+        ],
+        "description": "Grid positioning, high-ground bonuses, squad permadeath tension, and deep class promotions.",
+        "games": [
+            {"title": "Unicorn Overlord", "platforms": ["Switch", "PS5", "PS4", "Xbox"], "year": 2024, "score": 87, "desc": "Vanillaware's tactical marvel featuring squad formation synergies, real-time map maneuvers, and gorgeous 2D art."},
+            {"title": "Fire Emblem: Three Houses / Engage", "platforms": ["Switch"], "year": 2023, "score": 86, "desc": "Character bonds, weapon triangle mastery, Emblem Ring summons, and branching moral storylines."},
+            {"title": "XCOM 2: War of the Chosen", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2017, "score": 88, "desc": "Turn-based tactical perfection with alien guerrilla warfare, soldier customization, and 99% hit chance misses."},
+            {"title": "Triangle Strategy", "platforms": ["Switch", "PC"], "year": 2022, "score": 83, "desc": "Scales of Conviction moral branching, elemental elevation magic, and mature political intrigue."},
+            {"title": "Marvel's Midnight Suns", "platforms": ["PC", "PS5", "Xbox"], "year": 2022, "score": 83, "desc": "Firaxis card-tactics blend with superhero knockback physics and team relationship building."}
+        ]
+    },
+    {
+        "id": "jrpg",
+        "title": "Story-Rich Japanese RPGs (Persona & Final Fantasy Archetype)",
+        "icon": "✨",
+        "keywords": [
+            "jrpg", "japanese rpg", "persona", "persona 5", "persona 3 reload", "final fantasy", "ff7 rebirth",
+            "ff16", "dragon quest", "metaphor refantazio", "metaphor", "shin megami tensei", "smt", "tales of",
+            "xenoblade", "octopath traveler", "trails through daybreak", "like a dragon"
+        ],
+        "description": "Epic party adventures, emotional narrative journeys, turn-based weakness exploitation, and unforgettable soundtracks.",
+        "games": [
+            {"title": "Metaphor: ReFantazio", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 93, "desc": "The Persona team's medieval fantasy masterpiece: Royal Tournament politics, Archetype class evolution, and fast-paced turn battle blend."},
+            {"title": "Final Fantasy VII Rebirth", "platforms": ["PS5"], "year": 2024, "score": 92, "desc": "Vast open world beyond Midgar, tactical Synergy abilities, chocobo riding, and legendary musical arrangements."},
+            {"title": "Persona 3 Reload / Persona 5 Royal", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2024, "score": 89, "desc": "Stylish social calendar life by day, dungeon crawling and Shadow velvet room fusions by night."},
+            {"title": "Like a Dragon: Infinite Wealth", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 89, "desc": "Ichiban and Kiryu's Hawaiian vacation turn-based crime epic filled with wacky summons and poignant heart."},
+            {"title": "Octopath Traveler II", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2023, "score": 85, "desc": "Eight distinct intertwining character tales in jaw-dropping HD-2D with Break and Boost mechanics."}
+        ]
+    },
+    {
+        "id": "crpg",
+        "title": "Computer RPGs & Choice-Driven Western RPGs (Baldur's Gate Archetype)",
+        "icon": "🎲",
+        "keywords": [
+            "crpg", "baldur's gate", "baldurs gate", "bg3", "divinity original sin", "pillars of eternity",
+            "pathfinder wrath of the righteous", "rogue trader", "disco elysium", "wasteland 3", "dragon age",
+            "isometric rpg", "tabletop rpg", "dnd", "d&d"
+        ],
+        "description": "Dice rolls, immense branching choices, companion romances, and environmental reaction combat.",
+        "games": [
+            {"title": "Baldur's Gate 3", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 96, "desc": "Unprecedented player freedom, D&D 5e rules, fully voiced cinematic dialogues, and deep turn-based physics."},
+            {"title": "Divinity: Original Sin 2", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2017, "score": 93, "desc": "Elemental surface combination magic (oil + fire = inferno) and boundless co-op sandbox freedom."},
+            {"title": "Warhammer 40,000: Rogue Trader", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 81, "desc": "Command a voidship across the Koronus Expanse with grimdark party members and turn-based squad combat."},
+            {"title": "Disco Elysium - The Final Cut", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2021, "score": 92, "desc": "Combat-free literary masterpiece where your own brain faculties argue with each other during a murder investigation."},
+            {"title": "Pathfinder: Wrath of the Righteous", "platforms": ["PC", "PS5", "Xbox"], "year": 2021, "score": 83, "desc": "Lead a crusade against demonic rifts with mythic progression paths (Angel, Lich, Demon, Trickster)."}
+        ]
+    },
+    {
+        "id": "survival_horror",
+        "title": "Survival Horror & Psychological Terror (Silent Hill & Resident Evil)",
+        "icon": "🔦",
+        "keywords": [
+            "horror", "survival horror", "silent hill", "silent hill 2", "resident evil", "resident evil 4",
+            "dead space", "alan wake", "alan wake 2", "callisto protocol", "outlast", "amnesia", "signalis",
+            "the evil within", "fatal frame", "psychological horror", "scary games", "jump scares"
+        ],
+        "description": "Scarce ammunition, puzzle inventory management, chilling atmosphere, and psychological dread.",
+        "games": [
+            {"title": "Silent Hill 2 (Remake)", "platforms": ["PC", "PS5"], "year": 2024, "score": 86, "desc": "Over-the-shoulder foggy nightmare reimagined in UE5 with haunting sound design and psychological tragedy."},
+            {"title": "Alan Wake 2", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 89, "desc": "Mind Place detective investigation, live-action shifts, flashlight combat, and reality-bending Pacific Northwest dread."},
+            {"title": "Resident Evil 4 (Remake)", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 93, "desc": "The high watermark of action survival horror: knife parrying, roundhouse kicks, and merchant attache case management."},
+            {"title": "Dead Space (Remake)", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 89, "desc": "Zero-G space station terror, plasma cutter strategic limb dismemberment, and audio atmosphere."},
+            {"title": "Signalis", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2022, "score": 82, "desc": "Classic PS1 retro aesthetic survival horror with cosmic mysteries, 6-slot inventory, and melancholic synth soundtrack."}
+        ]
+    },
+    {
+        "id": "stealth_immersive_sim",
+        "title": "Stealth & Immersive Sims (Hitman, Metal Gear & Dishonored)",
+        "icon": "🕶️",
+        "keywords": [
+            "stealth", "stealth action", "hitman", "hitman world of assassination", "metal gear", "metal gear solid",
+            "mgs", "mgs delta", "dishonored", "deus ex", "splinter cell", "prey", "thief", "deathloop",
+            "immersive sim", "sniper elite", "shadow", "silent assassin"
+        ],
+        "description": "Disguises, emergent sandbox clockwork AI, silent takedowns, and multiple non-lethal infiltration paths.",
+        "games": [
+            {"title": "Hitman World of Assassination", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2023, "score": 87, "desc": "The pinnacle of clockwork murder sandboxes with hundreds of costumes, poison cups, and rogue-lite Freelancer mode."},
+            {"title": "Metal Gear Solid Delta: Snake Eater / MGSV", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 89, "desc": "Jungle camouflage index, survival injury treatment, CQC throws, and tactical espionage operational freedom."},
+            {"title": "Dishonored 2", "platforms": ["PC", "PS4", "Xbox"], "year": 2016, "score": 88, "desc": "Blink teleportation, clockwork mansion puzzle layouts, and complete non-lethal ghost playthrough freedom."},
+            {"title": "Prey (2017)", "platforms": ["PC", "PS4", "Xbox"], "year": 2017, "score": 84, "desc": "Arkane's sci-fi masterpiece aboard Talos I: turn into a coffee mug, build Gloo Cannon bridges, and hack alien systems."},
+            {"title": "Sniper Elite 5", "platforms": ["PC", "PS5", "Xbox"], "year": 2022, "score": 79, "desc": "Long-range ballistics, wind and bullet-drop physics, and signature X-ray kill cam assassinations across WWII maps."}
+        ]
+    },
+    {
+        "id": "extraction_milsim",
+        "title": "Extraction Shooters & Hardcore Tactical Mil-Sims (Tarkov Archetype)",
+        "icon": "🎒",
+        "keywords": [
+            "extraction shooter", "extraction", "tarkov", "escape from tarkov", "hunt showdown", "hunt showdown 1896",
+            "gray zone warfare", "marauders", "arena breakout", "arma", "arma 3", "arma reforger", "squad",
+            "insurgency sandstorm", "ready or not", "tactical shooter", "milsim", "hardcore shooter"
+        ],
+        "description": "Loot loss on death, realistic ballistics, weapon jams, room-clearing breaches, and high-tension extractions.",
+        "games": [
+            {"title": "Hunt: Showdown 1896", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 82, "desc": "Binaural sound-driven 1890s bayou bounty hunting: crows, snapping twigs, lever-action rifles, and banishing monsters."},
+            {"title": "Ready or Not", "platforms": ["PC"], "year": 2023, "score": 83, "desc": "High-intensity SWAT tactical breaching, civilian preservation, flashbang timing, and unforgiving CQB shootouts."},
+            {"title": "Escape from Tarkov", "platforms": ["PC"], "year": 2024, "score": 85, "desc": "The pioneer of hardcore weapon modding, realistic medical limb repair, scav battles, and raid extracts."},
+            {"title": "Squad", "platforms": ["PC"], "year": 2020, "score": 80, "desc": "50v50 combined arms military simulation requiring VOIP radio communication, logistics supply lines, and FOB building."},
+            {"title": "Insurgency: Sandstorm", "platforms": ["PC", "PS5", "Xbox"], "year": 2021, "score": 80, "desc": "Lethal close-quarters urban combat with zero crosshairs, weapon momentum, and deafening fire support."}
+        ]
+    },
+    {
+        "id": "looter_shooter_coop",
+        "title": "Looter Shooters & Co-Op PvE Action (Borderlands, Destiny & Helldivers)",
+        "icon": "🚀",
+        "keywords": [
+            "looter shooter", "loot shooter", "destiny", "destiny 2", "borderlands", "borderlands 3", "warframe",
+            "the first descendant", "helldivers", "helldivers 2", "deep rock galactic", "drg", "remnant",
+            "pve shooter", "coop shooter", "co-op shooter"
+        ],
+        "description": "Co-op raids, elemental gun drops, orbital stratagems, horde defense, and exponential gear builds.",
+        "games": [
+            {"title": "Helldivers 2", "platforms": ["PC", "PS5"], "year": 2024, "score": 85, "desc": "Hilarious patriotic democracy spread: 500kg bomb stratagems, friendly fire chaos, and relentless bug & bot swarms."},
+            {"title": "Destiny 2: The Final Shape", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 90, "desc": "Prismatic subclass fusion, master-tier 6-player raids, and peerless first-person gun feel."},
+            {"title": "Deep Rock Galactic", "platforms": ["PC", "PS5", "Xbox"], "year": 2020, "score": 86, "desc": "Four dwarf miner classes, 100% destructible alien caverns, swarm defense, and Rock and Stone camaraderie."},
+            {"title": "Warframe", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2024, "score": 86, "desc": "Lightning-fast parkour space ninjas with 50+ unique bio-metal warframes and free-to-play depth."},
+            {"title": "Borderlands 3 / Tiny Tina's Wonderlands", "platforms": ["PC", "PS5", "Xbox"], "year": 2022, "score": 80, "desc": "Over one billion procedurally rolled guns, comedic action skills, and colorful co-op mayhem."}
+        ]
+    },
+    {
+        "id": "roguelike_deckbuilder",
+        "title": "Action Roguelites & Card Deckbuilders (Hades & Balatro Archetype)",
+        "icon": "🃏",
+        "keywords": [
+            "roguelike", "roguelite", "rogue-like", "rogue-lite", "hades", "hades 2", "balatro", "slay the spire",
+            "dead cells", "binding of isaac", "enter the gungeon", "vampire survivors", "risk of rain", "risk of rain 2",
+            "monster train", "deckbuilder", "card roguelike", "bullet heaven"
+        ],
+        "description": "Procedural runs, permanent meta-progression, crazy card and boon synergies, and 'just one more run' addiction.",
+        "games": [
+            {"title": "Hades II", "platforms": ["PC"], "year": 2024, "score": 94, "desc": "Melinoë's witchcraft dash combat, Olympian god boons, incredible voice acting, and layered roguelite depth."},
+            {"title": "Balatro", "platforms": ["PC", "PS5", "Xbox", "Switch", "Mobile"], "year": 2024, "score": 91, "desc": "Hypnotic poker roguelike: combine illegal hands with game-breaking Joker mult-cards and planet upgrades."},
+            {"title": "Slay the Spire", "platforms": ["PC", "PS5", "Xbox", "Switch", "Mobile"], "year": 2019, "score": 89, "desc": "The gold standard of deckbuilders: Ironclad, Silent, Defect, and Watcher climbing the Spire with tight relics."},
+            {"title": "Dead Cells", "platforms": ["PC", "PS5", "Xbox", "Switch", "Mobile"], "year": 2018, "score": 89, "desc": "Lightning 2D roguevania combat with roll dodges, traps, and Castlevania crossover expansions."},
+            {"title": "Vampire Survivors", "platforms": ["PC", "PS5", "Xbox", "Switch", "Mobile"], "year": 2022, "score": 87, "desc": "The definitive auto-shooting bullet-heaven sensation with thousands of monsters and treasure chests."}
+        ]
+    },
+    {
+        "id": "open_world_rpg",
+        "title": "Open-World Narrative Epics (Witcher, Cyberpunk & GTA Archetype)",
+        "icon": "🌄",
+        "keywords": [
+            "open world", "open-world", "witcher", "witcher 3", "cyberpunk", "cyberpunk 2077", "red dead",
+            "red dead redemption", "rdr2", "gta", "grand theft auto", "ghost of tsushima", "horizon forbidden west",
+            "zelda", "breath of the wild", "tears of the kingdom", "starfield", "assassins creed", "ac valhalla"
+        ],
+        "description": "Breathtaking living worlds, branching moral dilemmas, horse & vehicle travel, and cinematic storylines.",
+        "games": [
+            {"title": "Cyberpunk 2077: Phantom Liberty", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 89, "desc": "Dogtown spy thriller starring Idris Elba, revamped perk tree cyberware, vehicle combat, and dazzling ray tracing."},
+            {"title": "The Witcher 3: Wild Hunt (Complete)", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2022, "score": 94, "desc": "Geralt's quest across Novigrad and Skellige: morally grey quests, monster contracts, and Gwent card matches."},
+            {"title": "Red Dead Redemption 2", "platforms": ["PC", "PS4", "Xbox"], "year": 2018, "score": 97, "desc": "Arthur Morgan's outlaw odyssey featuring unmatched environmental physics, campfire tales, and hunting realism."},
+            {"title": "Ghost of Tsushima: Director's Cut", "platforms": ["PC", "PS5", "PS4"], "year": 2021, "score": 87, "desc": "Wind-guided navigation across feudal Japan, duel standoffs, katana stances, and legendary samurai honour vs. ghost stealth."},
+            {"title": "The Legend of Zelda: Tears of the Kingdom", "platforms": ["Switch"], "year": 2023, "score": 96, "desc": "Ultrahand physics engineering: craft flying machines, fuse weapons, and explore Sky Islands and Depths."}
+        ]
+    },
+    {
+        "id": "cozy_farming_sim",
+        "title": "Cozy Games, Farming & Social Life Sims (Stardew & Animal Crossing)",
+        "icon": "🌾",
+        "keywords": [
+            "cozy", "cozy game", "farming sim", "life sim", "stardew valley", "stardew", "animal crossing",
+            "animal crossing new horizons", "sims", "the sims", "the sims 4", "coral island", "slime rancher",
+            "dave the diver", "harvest moon", "story of seasons", "rune factory", "relaxing games", "chill games"
+        ],
+        "description": "Relaxing crop harvest cycles, village festivals, home decoration, and peaceful wholesome escapism.",
+        "games": [
+            {"title": "Stardew Valley (Update 1.6)", "platforms": ["PC", "PS5", "Xbox", "Switch", "Mobile"], "year": 2024, "score": 91, "desc": "The gold standard: seasonal festivals, pet upgrades, greenhouse crops, mine delving, and Pelican Town romances."},
+            {"title": "Animal Crossing: New Horizons", "platforms": ["Switch"], "year": 2020, "score": 90, "desc": "Real-time deserted island paradise building, turnip stalk market, museum fossils, and villager friendships."},
+            {"title": "Dave the Diver", "platforms": ["PC", "PS5", "Switch"], "year": 2023, "score": 90, "desc": "Spearfishing the mysterious Blue Hole by day, running a bustling gourmet sushi restaurant by night."},
+            {"title": "Coral Island", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 82, "desc": "Tropical island farm revival with underwater reef diving, mermaid kingdoms, and rich diverse villagers."},
+            {"title": "Slime Rancher 2", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 84, "desc": "Explore Rainbow Island, vacuum up bouncy adorable slimes, and build a colorful thriving conservatory."}
+        ]
+    },
+    {
+        "id": "colony_management_factory",
+        "title": "Colony Sims, Automation & City Builders (Factorio & RimWorld)",
+        "icon": "🏭",
+        "keywords": [
+            "colony sim", "colony management", "city builder", "city building", "management sim", "automation",
+            "factory", "factorio", "rimworld", "satisfactory", "cities skylines", "frostpunk", "frostpunk 2",
+            "manor lords", "timberborn", "oxygen not included", "builder"
+        ],
+        "description": "Conveyor belt logistics, survivor survival psychologies, town zoning, and resource efficiency loops.",
+        "games": [
+            {"title": "Satisfactory (1.0)", "platforms": ["PC"], "year": 2024, "score": 90, "desc": "First-person alien world automation: construct gigantic multi-tier factories, hyper-tubes, and freight trains."},
+            {"title": "Frostpunk 2", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 86, "desc": "Brutal frozen post-apocalyptic society survival: district zoning, political faction negotiations, and city oil greed."},
+            {"title": "Manor Lords", "platforms": ["PC"], "year": 2024, "score": 88, "desc": "Photorealistic medieval village builder featuring organic ungridded road growth and Total War style militia defense."},
+            {"title": "Factorio: Space Age", "platforms": ["PC", "Switch"], "year": 2024, "score": 95, "desc": "The ultimate automation obsession: planetary space platforms, vulcanus smelting, and endless logistical conveyor belts."},
+            {"title": "RimWorld", "platforms": ["PC", "PS4", "Xbox"], "year": 2021, "score": 87, "desc": "AI storyteller-driven colony survival: mental breakdowns, bionic limb implants, and hilarious emergent tragedies."}
+        ]
+    },
+    {
+        "id": "grand_strategy_rts",
+        "title": "4X Grand Strategy & Real-Time Strategy (Civilization & Age of Empires)",
+        "icon": "👑",
+        "keywords": [
+            "4x", "grand strategy", "rts", "real time strategy", "civilization", "civ", "civ 6", "civ 7",
+            "stellaris", "crusader kings", "crusader kings 3", "hearts of iron", "europa universalis",
+            "age of empires", "total war", "total war warhammer", "starcraft", "command and conquer"
+        ],
+        "description": "Explore, Expand, Exploit, Exterminate: diplomatic treaties, dynastic marriages, tech trees, and massive armies.",
+        "games": [
+            {"title": "Crusader Kings III: Roads to Power", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 91, "desc": "Play as landless adventurers or Byzantine emperors, plot dynastic assassinations, and rule medieval history."},
+            {"title": "Sid Meier's Civilization VI / VII", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2024, "score": 88, "desc": "Unstacked city districts, historical wonder building, tactical army formations, and 'One More Turn' magic."},
+            {"title": "Age of Empires IV", "platforms": ["PC", "Xbox"], "year": 2021, "score": 81, "desc": "Asymmetrical medieval civilizations (English longbows, Mongol nomad relocations) with crisp historical documentary flair."},
+            {"title": "Stellaris", "platforms": ["PC", "PS4", "Xbox"], "year": 2024, "score": 83, "desc": "Galaxy-spanning 4X empire customization: robot uprisings, Dyson spheres, and interstellar diplomacy."},
+            {"title": "Total War: Warhammer III", "platforms": ["PC"], "year": 2022, "score": 85, "desc": "Immense Immortal Empires campaign combining turn-based empire map strategy with 10,000-unit fantasy battles."}
+        ]
+    },
+    {
+        "id": "survival_crafting_sandbox",
+        "title": "Survival Crafting & Open Sandbox (Minecraft & Valheim Archetype)",
+        "icon": "🏕️",
+        "keywords": [
+            "survival crafting", "survival", "crafting", "sandbox", "base building", "minecraft", "valheim",
+            "terraria", "rust", "ark survival", "ark survival ascended", "subnautica", "sons of the forest",
+            "the forest", "palworld", "enshrouded", "7 days to die", "raft"
+        ],
+        "description": "Tree punching, tool crafting, base fortification, hunger meters, and dangerous wilderness biomes.",
+        "games": [
+            {"title": "Palworld", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 82, "desc": "Capture quirky elemental Pals to automate your factory bases, craft firearms, and explore a massive archipelago."},
+            {"title": "Enshrouded", "platforms": ["PC"], "year": 2024, "score": 83, "desc": "Voxel-based building freedom in an atmospheric realm smothered by deadly fungal fog with Souls-lite combat."},
+            {"title": "Valheim", "platforms": ["PC", "Xbox"], "year": 2023, "score": 89, "desc": "Viking purgatory survival: longship sailing across stormy seas, mead brewing, and physics-based wooden longhouses."},
+            {"title": "Subnautica", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2018, "score": 87, "desc": "Submerged alien ocean survival: pilot the Cyclops submarine into dark bioluminescent depths with Reaper leviathans."},
+            {"title": "Minecraft", "platforms": ["PC", "PS5", "Xbox", "Switch", "Mobile"], "year": 2024, "score": 93, "desc": "The infinite block sandbox of creativity, Nether portals, Redstone computer logic, and limitless survival exploration."}
+        ]
+    },
+    {
+        "id": "racing_motorsport",
+        "title": "Racing, Drifting & Motorsports (Forza & Gran Turismo Archetype)",
+        "icon": "🏎️",
+        "keywords": [
+            "racing", "racing game", "driving", "cars", "forza", "forza horizon", "forza motorsport",
+            "gran turismo", "gt7", "need for speed", "nfs", "f1", "f1 24", "assetto corsa", "dirt rally",
+            "ea sports wrc", "mario kart", "kart racer", "drift", "car racing"
+        ],
+        "description": "Apex cornering, force-feedback steering wheels, open-road festival cruises, and hypercar tuning.",
+        "games": [
+            {"title": "Forza Horizon 5", "platforms": ["PC", "Xbox"], "year": 2021, "score": 92, "desc": "Breathtaking open-world Mexico festival with hundreds of licensed cars, jungle trails, and volcano sprints."},
+            {"title": "Gran Turismo 7", "platforms": ["PS5", "PS4"], "year": 2022, "score": 87, "desc": "The real driving simulator: PS VR2 full cockpit immersion, automotive history cafe, and hyper-accurate tire physics."},
+            {"title": "Mario Kart 8 Deluxe (Booster Course)", "platforms": ["Switch"], "year": 2023, "score": 92, "desc": "96 legendary courses, anti-gravity drift boosting, blue shells, and timeless couch multiplayer perfection."},
+            {"title": "Assetto Corsa Competizione", "platforms": ["PC", "PS5", "Xbox"], "year": 2022, "score": 82, "desc": "The hardcore GT3 esports benchmark with laser-scanned tracks and realistic tire degradation."},
+            {"title": "EA Sports WRC", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 80, "desc": "Codemasters' rally sim: treacherous gravel hairpins, co-driver pacenotes, and pulse-pounding stage times."}
+        ]
+    },
+    {
+        "id": "sports_athletics",
+        "title": "Sports & Competitive Athletics (EA Sports FC & NBA 2K Archetype)",
+        "icon": "⚽",
+        "keywords": [
+            "sports", "football", "soccer", "basketball", "baseball", "hockey", "fifa", "ea sports fc",
+            "fc 24", "fc 25", "nba 2k", "nba 2k25", "madden", "mlb the show", "nhl", "wwe 2k",
+            "college football", "college football 25", "rocket league", "topspin"
+        ],
+        "description": "Franchise management, authentic player ball physics, playbook strategy, and stadium atmosphere.",
+        "games": [
+            {"title": "EA Sports College Football 25", "platforms": ["PS5", "Xbox"], "year": 2024, "score": 84, "desc": "Electrifying return of campus rivalries, marching bands, Dynasty recruiting, and fast-paced option offense."},
+            {"title": "EA Sports FC 25", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2024, "score": 77, "desc": "FC IQ tactical overhaul, 5v5 Rush small-sided mode, and world football licenses across Champions League."},
+            {"title": "NBA 2K25", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2024, "score": 80, "desc": "ProPLAY animation fidelity mimicking real NBA superstars, MyCAREER street courts, and Era franchise modes."},
+            {"title": "MLB The Show 24", "platforms": ["PS5", "Xbox", "Switch"], "year": 2024, "score": 80, "desc": "Diamond Dynasty card collection, pinpoint pitching control, and historic Negro Leagues Storylines."},
+            {"title": "Rocket League", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2020, "score": 86, "desc": "Acrobatic rocket-powered cars playing physics soccer with aerial boost saves and zero RNG."}
+        ]
+    },
+    {
+        "id": "fighting_brawler",
+        "title": "Fighting Games & Martial Arts Brawlers (Street Fighter & Tekken)",
+        "icon": "🥋",
+        "keywords": [
+            "fighting", "fighting game", "fighters", "street fighter", "sf6", "tekken", "tekken 8", "mortal kombat",
+            "mk1", "guilty gear", "guilty gear strive", "smash bros", "smash ultimate", "dragon ball",
+            "sparking zero", "brawler", "beat em up", "sifu", "streets of rage"
+        ],
+        "description": "Frame data precision, combo cancels, footsies spacing, defensive parries, and hype tournament battles.",
+        "games": [
+            {"title": "Tekken 8", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 90, "desc": "Aggressive Heat System mechanics, cinematic destructible stages, and accessible Arcade Quest mode."},
+            {"title": "Street Fighter 6", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 92, "desc": "Drive Gauge system balance, modern controller inputs, rollback netcode, and open-world World Tour mode."},
+            {"title": "Dragon Ball: Sparking! ZERO", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 82, "desc": "The return of Budokai Tenkaichi 3D arena brawling with 180+ anime fighters and beam clashes."},
+            {"title": "Sifu", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2022, "score": 81, "desc": "Pak Mei Kung Fu aging mechanic: master directional parries, sweeps, and nightclub brawl choreography."},
+            {"title": "Super Smash Bros. Ultimate", "platforms": ["Switch"], "year": 2018, "score": 93, "desc": "89 iconic video game fighters, platform edge-guarding, and the ultimate tribute to gaming history."}
+        ]
+    },
+    {
+        "id": "platformer",
+        "title": "2D & 3D Platformers (Mario & Astro Bot Archetype)",
+        "icon": "🍄",
+        "keywords": [
+            "platformer", "3d platformer", "2d platformer", "jump and run", "astro bot", "mario", "mario odyssey",
+            "mario wonder", "celeste", "rayman", "crash bandicoot", "spyro", "psychonauts", "sonic",
+            "prince of persia", "lost crown", "ori", "ori and the will of the wisps"
+        ],
+        "description": "Precision jumping, secret collectibles, inventive gadget traversal, and pure unadulterated joy.",
+        "games": [
+            {"title": "Astro Bot", "platforms": ["PS5"], "year": 2024, "score": 94, "desc": "PlayStation's masterpiece of haptic DualSense magic, 80 creative levels, and joyous VIP bot cameos."},
+            {"title": "Super Mario Bros. Wonder", "platforms": ["Switch"], "year": 2023, "score": 92, "desc": "Wonder Flowers transforming levels into singing piranha plants, elephant power-ups, and badges."},
+            {"title": "Prince of Persia: The Lost Crown", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2024, "score": 86, "desc": "Phenomenal 60FPS acrobatic parrying, time-shift powers, and map screenshot memory markers."},
+            {"title": "Celeste", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2018, "score": 91, "desc": "Tight 8-directional air dash platforming combined with a touching personal story about anxiety."},
+            {"title": "Ori and the Will of the Wisps", "platforms": ["PC", "Xbox", "Switch"], "year": 2020, "score": 90, "desc": "Gorgeous painterly visuals, orchestral score, spirit weapon combat, and kinetic chase sequences."}
+        ]
+    },
+    {
+        "id": "character_action",
+        "title": "Character Action & Stylish Spectacle Fighters (Devil May Cry & Bayonetta)",
+        "icon": "⚡",
+        "keywords": [
+            "character action", "spectacle fighter", "stylish action", "hack and slash", "devil may cry", "dmc",
+            "dmc5", "bayonetta", "god of war", "ninja gaiden", "metal gear rising", "astral chain", "stellar blade",
+            "stylish rank", "air juggling"
+        ],
+        "description": "Weapon switching mid-combo, SSS style ratings, aerial juggle loops, and over-the-top boss climaxes.",
+        "games": [
+            {"title": "Stellar Blade", "platforms": ["PS5"], "year": 2024, "score": 82, "desc": "Eve's dazzling sci-fi sword choreography: perfect parries, dodge counters, and breathtaking Naytiba bosses."},
+            {"title": "Devil May Cry 5: Special Edition", "platforms": ["PC", "PS5", "Xbox"], "year": 2020, "score": 89, "desc": "Triple character combat depth (Dante, Nero, V/Vergil) with royal guard parries and smokin' sexy style."},
+            {"title": "God of War Ragnarök", "platforms": ["PC", "PS5", "PS4"], "year": 2022, "score": 94, "desc": "Kratos' Leviathan Axe recall physics, Blades of Chaos whip grappling, and Norse mythical grandeur."},
+            {"title": "Bayonetta 3", "platforms": ["Switch"], "year": 2022, "score": 86, "desc": "Witch Time slow motion dodges and Kaiju-sized Demon Slave summons across multiversal timelines."},
+            {"title": "Hi-Fi Rush", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 89, "desc": "Action rhythm hybrid where attacks, parries, and stage environments sync perfectly to rock beats."}
+        ]
+    },
+    {
+        "id": "puzzle_detective_narrative",
+        "title": "Puzzle, Mystery & Detective Adventures (Portal, Outer Wilds & Obra Dinn)",
+        "icon": "🔍",
+        "keywords": [
+            "puzzle", "detective", "mystery", "narrative", "story rich", "walking simulator", "portal", "portal 2",
+            "the witness", "return of the obra dinn", "outer wilds", "talos principle", "talos principle 2",
+            "ace attorney", "phoenix wright", "lorelei and the laser eyes", "blue prince", "case of the golden idol"
+        ],
+        "description": "Deduction mechanics, perspective puzzles, time loop investigations, and brilliant eureka moments.",
+        "games": [
+            {"title": "Lorelei and the Laser Eyes", "platforms": ["PC", "PS5", "Switch"], "year": 2024, "score": 88, "desc": "Simogo's monochromatic hotel mystery woven with cryptographic riddles, optical illusions, and surreal cinema."},
+            {"title": "The Talos Principle 2", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 88, "desc": "Deep philosophical questions on humanity wrapped around elegant laser redirection and gravity beam puzzles."},
+            {"title": "Outer Wilds", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2019, "score": 85, "desc": "The greatest mystery in gaming: 22-minute solar system time loop fueled strictly by player curiosity."},
+            {"title": "Return of the Obra Dinn", "platforms": ["PC", "PS4", "Xbox", "Switch"], "year": 2018, "score": 89, "desc": "Use a magical pocket watch to observe frozen death moments and deduce the fates of 60 ship crew members."},
+            {"title": "The Rise of the Golden Idol", "platforms": ["PC", "PS5", "Xbox", "Switch", "Mobile"], "year": 2024, "score": 87, "desc": "Fill-in-the-blank deduction mechanics piecing together bizarre 1970s crimes and occult conspiracies."}
+        ]
+    },
+    {
+        "id": "mmo_shared_world",
+        "title": "MMORPGs & Persistent Online Worlds (World of Warcraft & FFXIV)",
+        "icon": "🌐",
+        "keywords": [
+            "mmo", "mmorpg", "massive multiplayer", "world of warcraft", "wow", "final fantasy xiv", "ff14",
+            "ffxiv", "elder scrolls online", "eso", "guild wars 2", "lost ark", "runescape", "osrs",
+            "throne and liberty", "black desert", "mmo raid"
+        ],
+        "description": "Persistent fantasy realms, guild coordination, raid tier progression, player economies, and endless quests.",
+        "games": [
+            {"title": "World of Warcraft: The War Within", "platforms": ["PC"], "year": 2024, "score": 84, "desc": "Underground Khaz Algar continent, bite-sized Delves solo/duo progression, and Warbands account sharing."},
+            {"title": "Final Fantasy XIV: Dawntrail", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 82, "desc": "Vibrant Tural expansion, Viper and Pictomancer jobs, graphical overhaul, and cinematic raid bosses."},
+            {"title": "Guild Wars 2: Janthir Wilds", "platforms": ["PC"], "year": 2024, "score": 83, "desc": "Player homestead housing, spear weapons on land, mount physics, and zero gear-treadmill casual respect."},
+            {"title": "The Elder Scrolls Online: Gold Road", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 79, "desc": "Custom skill Scribing system, West Weald exploration, and Tamriel lore fully voiced in any order."},
+            {"title": "Old School RuneScape", "platforms": ["PC", "Mobile"], "year": 2024, "score": 90, "desc": "Varlanmore expansion, classic point-and-click grinding, player-polled updates, and rich sandbox economy."}
+        ]
+    },
+    {
+        "id": "rhythm_music",
+        "title": "Rhythm, Music & Synchronization (Hi-Fi Rush & Beat Saber)",
+        "icon": "🎵",
+        "keywords": [
+            "rhythm", "music game", "rhythm game", "beat saber", "hi-fi rush", "guitar hero", "clone hero",
+            "synth riders", "rhythm doctor", "crypt of the necrodancer", "taiko no tatsujin", "metal hellsinger"
+        ],
+        "description": "Audio cue reflexes, musical timing beat hits, note highways, and infectious soundtracks.",
+        "games": [
+            {"title": "Hi-Fi Rush", "platforms": ["PC", "PS5", "Xbox"], "year": 2023, "score": 89, "desc": "Pure Saturday-morning cartoon joy syncing attacks, combos, and parries to licensed rock beats."},
+            {"title": "Beat Saber", "platforms": ["PC", "PS5"], "year": 2019, "score": 86, "desc": "Dual laser sabers slicing colored blocks in VR to heart-pumping electronic and rock music."},
+            {"title": "Metal: Hellsinger", "platforms": ["PC", "PS5", "Xbox"], "year": 2022, "score": 79, "desc": "Shoot demons on the beat of original heavy metal tracks featuring Serj Tankian and Alissa White-Gluz."},
+            {"title": "Crypt of the NecroDancer: Synchrony", "platforms": ["PC", "Switch", "PS4"], "year": 2024, "score": 87, "desc": "Rogue-like dungeon crawler where every tile hop and attack must land on the Danny Baranowsky beat."},
+            {"title": "Rhythm Doctor", "platforms": ["PC"], "year": 2021, "score": 88, "desc": "Defibrillate patient hearts by hitting the spacebar exactly on the 7th beat amidst visual glitch hijinks."}
+        ]
+    },
+    {
+        "id": "vehicle_space_simulation",
+        "title": "Vehicle, Flight & Space Simulators (Flight Sim & No Man's Sky)",
+        "icon": "🛸",
+        "keywords": [
+            "flight simulator", "flight sim", "space sim", "space flight", "msfs", "microsoft flight simulator",
+            "elite dangerous", "star citizen", "no man's sky", "kerbal space program", "euro truck simulator",
+            "farming simulator", "simulator", "sim"
+        ],
+        "description": "Cockpit instruments, realistic avionics, planetary atmospheric entries, and relaxing cargo hauls.",
+        "games": [
+            {"title": "Microsoft Flight Simulator 2024", "platforms": ["PC", "Xbox"], "year": 2024, "score": 90, "desc": "Full Earth digital twin with commercial aviation careers, search & rescue, hot air balloons, and live weather."},
+            {"title": "No Man's Sky (Worlds Part 1)", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2024, "score": 84, "desc": "18 quintillion procedural planets, seamless planetary landings, base building, and deep space exploration."},
+            {"title": "Elite Dangerous: Odyssey", "platforms": ["PC"], "year": 2021, "score": 80, "desc": "1:1 Milky Way galaxy replica: bounty hunt in asteroid rings, trade commodities, and land on alien worlds."},
+            {"title": "Euro Truck Simulator 2", "platforms": ["PC"], "year": 2024, "score": 85, "desc": "The ultimate zen driving experience hauling freight across scenic European highways with radio streaming."},
+            {"title": "Kerbal Space Program", "platforms": ["PC", "PS4", "Xbox"], "year": 2015, "score": 88, "desc": "Build realistic multi-stage rockets using actual orbital mechanics and aerodynamics physics."}
+        ]
+    },
+    {
+        "id": "party_couch_coop",
+        "title": "Party Games & Couch Co-Op (It Takes Two & Overcooked Archetype)",
+        "icon": "🎉",
+        "keywords": [
+            "co-op", "coop", "local coop", "couch coop", "party game", "2 player", "two player", "it takes two",
+            "overcooked", "a way out", "lethal company", "among us", "party animals", "human fall flat", "gang beasts"
+        ],
+        "description": "Split-screen laughter, kitchen fire coordination, proximity-voice panic, and teamwork bond tests.",
+        "games": [
+            {"title": "It Takes Two", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2021, "score": 89, "desc": "The undisputed Game of the Year co-op masterpiece where every single chapter invents brand new shared mechanics."},
+            {"title": "Overcooked! All You Can Eat", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2020, "score": 84, "desc": "Frenetic kitchen management with shifting floors, balloon fires, dishwashing bottlenecks, and yelling."},
+            {"title": "Lethal Company", "platforms": ["PC"], "year": 2023, "score": 88, "desc": "Hilarious proximity-chat horror: scavenge abandoned industrial moons to hit Profit Quotas while dodging monsters."},
+            {"title": "Party Animals", "platforms": ["PC", "Xbox"], "year": 2023, "score": 78, "desc": "Fluffy physics brawler where puppies and kittens drop-kick each other off flying submarine wings."},
+            {"title": "A Way Out", "platforms": ["PC", "PS5", "Xbox"], "year": 2018, "score": 79, "desc": "Mandatory 2-player prison breakout with cinematic split-screen perspectives and emotional twists."}
+        ]
+    },
+    {
+        "id": "hero_competitive_shooter",
+        "title": "Hero Shooters & Competitive Tactical FPS (Valorant, CS2 & Overwatch)",
+        "icon": "🏆",
+        "keywords": [
+            "hero shooter", "competitive shooter", "tactical fps", "valorant", "counter strike", "cs2", "csgo",
+            "rainbow six siege", "siege", "marvel rivals", "overwatch", "overwatch 2", "bomb defusal", "esports fps"
+        ],
+        "description": "5v5 team coordination, utility lineups, crosshair headshot placement, and ultimate ability combos.",
+        "games": [
+            {"title": "Counter-Strike 2", "platforms": ["PC"], "year": 2023, "score": 82, "desc": "Sub-tick hit registration, volumetric responsive smoke grenades, and pure tactical bomb defusal mastery."},
+            {"title": "Valorant", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 83, "desc": "Riot's tactical shooter blending precise gunplay recoil with agent smoke, dash, and wall abilities."},
+            {"title": "Marvel Rivals", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 83, "desc": "6v6 superhero team shooter with dynamic Team-Up abilities (Rocket on Groot's back) and destructible maps."},
+            {"title": "Rainbow Six Siege", "platforms": ["PC", "PS5", "Xbox"], "year": 2024, "score": 81, "desc": "Destructible drywall surfaces, drone reconnaissance, reinforcing walls, and lethal one-shot headshot angles."},
+            {"title": "Overwatch 2", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2024, "score": 79, "desc": "Fast hero combat with tanks, damage dealers, and healers pushing payloads in vibrant global cities."}
+        ]
+    },
+    {
+        "id": "card_battler_tcg",
+        "title": "Card Battlers & Digital TCGs (Magic, Yu-Gi-Oh & Marvel Snap)",
+        "icon": "🎴",
+        "keywords": [
+            "card game", "card battler", "tcg", "ccg", "autobattler", "auto chess", "tft", "teamfight tactics",
+            "hearthstone", "magic the gathering", "mtg", "mtg arena", "yugioh", "master duel", "marvel snap", "inscryption"
+        ],
+        "description": "Deck optimization, mana curve mathematics, bluffing snaps, and strategic turn order sequencing.",
+        "games": [
+            {"title": "Balatro", "platforms": ["PC", "PS5", "Xbox", "Switch", "Mobile"], "year": 2024, "score": 91, "desc": "The addictive poker card roguelike phenomenon blending spectral packs, tarot cards, and multi-triggers."},
+            {"title": "Inscryption", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2021, "score": 87, "desc": "Atmospheric cabin horror deckbuilder that continually morphs and breaks its own boundaries."},
+            {"title": "Marvel Snap", "platforms": ["PC", "Mobile"], "year": 2022, "score": 85, "desc": "Bite-sized 3-minute card duels across 3 randomized locations with bluffing 'Snap' poker stakes."},
+            {"title": "Teamfight Tactics (TFT)", "platforms": ["PC", "Mobile"], "year": 2024, "score": 85, "desc": "Riot's premier 8-player autobattler with economy interest management, trait synergies, and item slams."},
+            {"title": "Magic: The Gathering Arena", "platforms": ["PC", "Mobile"], "year": 2024, "score": 82, "desc": "The definitive grandfather of TCGs in digital form with standard, commander brawl, and draft events."}
+        ]
+    },
+    {
+        "id": "visual_novel_interactive_story",
+        "title": "Visual Novels & Interactive Narrative Dramas (Life is Strange & Detroit)",
+        "icon": "📖",
+        "keywords": [
+            "visual novel", "interactive movie", "interactive drama", "vn", "choose your own adventure",
+            "steins gate", "danganronpa", "doki doki", "doki doki literature club", "life is strange",
+            "detroit become human", "until dawn", "the quarry", "oxenfree", "narrative choice"
+        ],
+        "description": "Divergent flowchart branches, butterfly effect consequences, moral dilemmas, and unforgettable character arcs.",
+        "games": [
+            {"title": "Detroit: Become Human", "platforms": ["PC", "PS5", "PS4"], "year": 2018, "score": 80, "desc": "Massive branching narrative flowchart following three androids awakening to consciousness with real permanent deaths."},
+            {"title": "Until Dawn (Remake)", "platforms": ["PC", "PS5"], "year": 2024, "score": 76, "desc": "Teen slasher movie survival where your quick-time decisions and clues determine who survives until morning."},
+            {"title": "Life is Strange: Double Exposure", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2024, "score": 75, "desc": "Max Caulfield shifts between two parallel timelines to investigate and prevent a friend's murder."},
+            {"title": "Steins;Gate", "platforms": ["PC", "PS4", "Switch"], "year": 2015, "score": 87, "desc": "The undisputed pinnacle of time-travel fiction: sending microwave text messages to the past with dire butterfly effects."},
+            {"title": "Doki Doki Literature Club Plus!", "platforms": ["PC", "PS5", "Xbox", "Switch"], "year": 2021, "score": 85, "desc": "A deceptively cute high school poetry club that deconstructs the medium with Fourth-wall breaking psychological terror."}
+        ]
     }
 ]
 
+ARCHETYPES_BY_ID = {a["id"]: a for a in ALL_ARCHETYPES}
 
-# ==========================================
-# DATABASE LAYER & SEED MIGRATION
-# ==========================================
-def get_db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+# ---------------------------------------------------------------------------
+# CONVERSATION MEMORY (Multi-turn state)
+# ---------------------------------------------------------------------------
+USER_SESSION_STATE = {
+    "last_archetype_id": None,
+    "last_platform": None
+}
 
-def init_db():
-    with get_db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS articles (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                ai_title TEXT,
-                summary TEXT,
-                key_takeaways TEXT,
-                category TEXT,
-                tag TEXT,
-                source_name TEXT,
-                source_url TEXT UNIQUE,
-                image_url TEXT,
-                published_at TEXT,
-                created_at TEXT,
-                batch_date TEXT,
-                sentiment TEXT
-            )
-        """)
-        try:
-            conn.execute("ALTER TABLE articles ADD COLUMN image_url TEXT")
-        except sqlite3.OperationalError:
-            pass
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS sync_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        
-        now_iso = datetime.now(timezone.utc).isoformat()
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        
-        for item in SEED_ARTICLES:
-            cursor = conn.execute("SELECT id FROM articles WHERE source_url = ?", (item["source_url"],))
-            if cursor.fetchone() is None:
-                conn.execute("""
-                    INSERT INTO articles (
-                        title, ai_title, summary, key_takeaways, category, tag,
-                        source_name, source_url, image_url, published_at, created_at, batch_date, sentiment
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    item["title"], item["ai_title"], item["summary"], item["key_takeaways"],
-                    item["category"], item["tag"], item["source_name"], item["source_url"],
-                    item["image_url"], item["published_at"], now_iso, today_str, item["sentiment"]
-                ))
-
-        conn.commit()
-
-
-# ==========================================
-# FRESHNESS GATEKEEPER & DATE PARSING
-# ==========================================
-def parse_and_validate_date(pub_date_str):
-    if not pub_date_str:
-        return (True, datetime.now(timezone.utc).strftime("%b %d, %Y"))
+# ---------------------------------------------------------------------------
+# MATCHING & FILTERING ENGINE
+# ---------------------------------------------------------------------------
+def parse_query_filters(text):
+    text_l = text.lower()
     
-    dt = None
-    try:
-        parsed_tuple = email.utils.parsedate_tz(pub_date_str)
-        if parsed_tuple:
-            timestamp = email.utils.mktime_tz(parsed_tuple)
-            dt = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-    except Exception:
-        pass
+    # Year extraction
+    year_match = re.search(r'\b(202[0-9])\b', text_l)
+    year = int(year_match.group(1)) if year_match else None
+    
+    # Score extraction (e.g., "80+", "score 85", "rated 90+")
+    score = None
+    if re.search(r'\b([6-9][0-9])\s*\+', text_l):
+        m = re.search(r'\b([6-9][0-9])\s*\+', text_l)
+        score = int(m.group(1))
+    elif any(term in text_l for term in ['rated', 'score', 'rating', 'metacritic', 'opencritic']):
+        m = re.search(r'\b([6-9][0-9])\b', text_l)
+        if m:
+            score = int(m.group(1))
+            
+    # Platform extraction
+    platform = None
+    if re.search(r'\b(ps5|playstation\s*5|ps4|playstation|sony)\b', text_l):
+        platform = 'PS5'
+    elif re.search(r'\b(pc|steam|windows)\b', text_l):
+        platform = 'PC'
+    elif re.search(r'\b(xbox|series\s*x|series\s*s|one)\b', text_l):
+        platform = 'Xbox'
+    elif re.search(r'\b(switch|nintendo\s*switch|nintendo)\b', text_l):
+        platform = 'Switch'
+    elif re.search(r'\b(mobile|ios|android|phone)\b', text_l):
+        platform = 'Mobile'
+        
+    return {'year': year, 'score': score, 'platform': platform}
 
-    if dt is None:
-        try:
-            clean_iso = pub_date_str.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(clean_iso)
-        except Exception:
-            pass
 
-    if dt:
-        now = datetime.now(timezone.utc)
-        diff_sec = (now - dt).total_seconds()
-        if diff_sec > (MAX_ARTICLE_AGE_DAYS * 86400):
-            return (False, None)
-        return (True, dt.strftime("%b %d, %Y"))
+def match_archetype(query):
+    q_clean = re.sub(r'[^a-z0-9\s]', ' ', query.lower())
+    q_words = q_clean.split()
+    
+    best_arch = None
+    best_score = 0.0
+    
+    for arch in ALL_ARCHETYPES:
+        for kw in arch['keywords']:
+            kw_clean = kw.lower()
+            
+            # 1. Exact phrase/word match
+            if kw_clean in q_clean:
+                score = 100.0 + len(kw_clean)
+                if score > best_score:
+                    best_score = score
+                    best_arch = arch
+                continue
+            
+            # 2. Fuzzy n-gram window match for typos (e.g. "call of dury" -> "call of duty")
+            kw_words = kw_clean.split()
+            n = len(kw_words)
+            if n == 0 or len(q_words) < n:
+                continue
+            for i in range(len(q_words) - n + 1):
+                window = ' '.join(q_words[i:i+n])
+                ratio = difflib.SequenceMatcher(None, window, kw_clean).ratio()
+                if ratio >= 0.78:
+                    score = 50.0 * ratio + len(kw_clean)
+                    if score > best_score:
+                        best_score = score
+                        best_arch = arch
 
-    return (True, pub_date_str[:10] if len(pub_date_str) >= 10 else "Recent")
+    return best_arch
 
-def clean_html(raw_html):
-    if not raw_html:
-        return ""
-    text = re.sub(r'submitted by\s+/u/\S+(\s+\[link\])?(\s+\[comments\])?', '', raw_html, flags=re.IGNORECASE)
-    text = re.sub(r'\[link\]|\[comments\]', '', text, flags=re.IGNORECASE)
-    clean = re.sub(r'<[^>]+>', ' ', text)
-    clean = re.sub(r'\s+', ' ', clean).strip()
-    return clean.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', "'")
 
-def extract_image_from_html(html_str):
-    if not html_str:
-        return ""
-    match = re.search(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', html_str, re.IGNORECASE)
-    if match:
-        url = match.group(1)
-        if not any(sub in url.lower() for sub in ["1x1", "pixel", "avatar", "icon", "badge", "emoji"]):
-            return url
+def generate_pulsar_response(user_message):
+    global USER_SESSION_STATE
+    msg_clean = user_message.strip()
+    filters = parse_query_filters(msg_clean)
+    
+    matched_arch = match_archetype(msg_clean)
+    
+    # If a new archetype is matched, update session and reset platform unless explicitly given
+    if matched_arch:
+        USER_SESSION_STATE["last_archetype_id"] = matched_arch["id"]
+        USER_SESSION_STATE["last_platform"] = filters["platform"]
+        active_platform = filters["platform"]
+    else:
+        # Check if user is following up on a previous recommendation
+        if USER_SESSION_STATE["last_archetype_id"]:
+            matched_arch = ARCHETYPES_BY_ID.get(USER_SESSION_STATE["last_archetype_id"])
+        if filters["platform"]:
+            USER_SESSION_STATE["last_platform"] = filters["platform"]
+        active_platform = filters["platform"] or USER_SESSION_STATE.get("last_platform")
+        
+    active_year = filters["year"]
+    active_score = filters["score"]
+
+    # 1. ARCHETYPE MATCHED (DIRECT & CUSTOMIZED)
+    if matched_arch:
+        games = list(matched_arch["games"])
+        
+        # Apply platform filtering if requested
+        if active_platform:
+            filtered_games = [g for g in games if active_platform in g["platforms"]]
+            if filtered_games:
+                games = filtered_games
+                
+        # Apply score filtering if requested
+        if active_score:
+            filtered_games = [g for g in games if g["score"] >= active_score]
+            if filtered_games:
+                games = filtered_games
+
+        platform_suffix = f" on {active_platform}" if active_platform else ""
+        header = f"{matched_arch['icon']} Top Recommendations: {matched_arch['title']}{platform_suffix}"
+        
+        lines = [header, ""]
+        lines.append(f"*{matched_arch['description']}*")
+        lines.append("")
+        
+        for i, g in enumerate(games, 1):
+            plat_str = ", ".join(g["platforms"])
+            lines.append(f"**{i}. {g['title']}** ({plat_str} — OpenCritic/Metacritic {g['score']})")
+            lines.append(f"- **Why You'll Love It:** {g['desc']}")
+            lines.append("")
+            
+        if active_platform:
+            lines.append(f"💡 *Curated specifically for **{active_platform}**. Looking for other platforms (PC, PS5, Xbox, Switch) or release years? Just ask!*")
+        else:
+            lines.append("💡 *Looking to play on a specific platform (PC, PS5, Xbox, Switch) or want to explore another genre? Just let me know!*")
+            
+        return "\n".join(lines)
+
+    # 2. YEAR OR RATING GENERAL FILTER
+    if active_year or active_score:
+        all_games = []
+        for arch in ALL_ARCHETYPES:
+            for g in arch["games"]:
+                all_games.append((g, arch))
+                
+        filtered = []
+        for g, arch in all_games:
+            matches = True
+            if active_year and g["year"] != active_year:
+                matches = False
+            if active_score and g["score"] < active_score:
+                matches = False
+            if active_platform and active_platform not in g["platforms"]:
+                matches = False
+            if matches:
+                filtered.append((g, arch))
+                
+        # Sort by score descending
+        filtered.sort(key=lambda x: x[0]["score"], reverse=True)
+        
+        if filtered:
+            year_label = f"from {active_year} " if active_year else ""
+            score_label = f"rated {active_score}+ " if active_score else ""
+            plat_label = f"on {active_platform} " if active_platform else ""
+            
+            lines = [f"🏆 Top-Rated Video Games {year_label}{score_label}{plat_label}:", ""]
+            seen_titles = set()
+            count = 0
+            for g, arch in filtered:
+                if g["title"] in seen_titles: continue
+                seen_titles.add(g["title"])
+                count += 1
+                plat_str = ", ".join(g["platforms"])
+                lines.append(f"**{count}. {g['title']}** ({plat_str} — Score {g['score']})")
+                lines.append(f"- *Genre:* {arch['title']}")
+                lines.append(f"- *Why You'll Love It:* {g['desc']}")
+                lines.append("")
+                if count >= 6:
+                    break
+                    
+            lines.append("Tell me a specific genre or franchise you love to narrow down even further!")
+            return "\n".join(lines)
+
+    # 3. OPEN-ENDED DIVERSE FALLBACK
+    lines = [
+        "🎮 **GamePulse Concierge Recommendations**",
+        "",
+        "Here are player-favorite, critically acclaimed masterworks across major game genres right now:",
+        "",
+        "1. **Elden Ring: Shadow of the Erdtree** (PC, PS5, Xbox — OpenCritic 95)",
+        "- *Genre: Dark Action RPG & Open-World* — Monumental scale, intricate vertical level design, and legendary boss fights.",
+        "",
+        "2. **Astro Bot** (PS5 — OpenCritic 94)",
+        "- *Genre: 3D Platformer* — Pure imaginative platforming joy with DualSense haptic feedback magic and creative surprises.",
+        "",
+        "3. **Metaphor: ReFantazio** (PC, PS5, Xbox — OpenCritic 93)",
+        "- *Genre: Turn-Based JRPG* — Royal tournament fantasy politics, fluid class evolution, and stylish battle presentation.",
+        "",
+        "4. **Balatro** (PC, Consoles, Mobile — OpenCritic 91)",
+        "- *Genre: Roguelike Deckbuilder* — Hypnotic, game-breaking poker mult-combos and endless replayability.",
+        "",
+        "5. **Warhammer 40,000: Space Marine 2** (PC, PS5, Xbox — OpenCritic 83)",
+        "- *Genre: Tactical Third-Person Shooter & Co-Op* — Crushing boltgun firepower against thousands of Tyranid swarm monsters.",
+        "",
+        "What genre, franchise, or playstyle are you in the mood for? (e.g. Diablo, Gears of War, Spider-Man, Fire Emblem, Survival Horror, Cozy Sims, FPS, Racing, RPGs, or a specific platform!)"
+    ]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# DATABASE INITIALIZATION & COLD-START SEED DATA
+# ---------------------------------------------------------------------------
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS articles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            summary TEXT,
+            url TEXT UNIQUE,
+            source TEXT,
+            tag TEXT,
+            published_at TEXT,
+            score INTEGER DEFAULT 0,
+            image_url TEXT DEFAULT ''
+        )
+    """)
+    conn.commit()
+
+    # Pre-populate all tabs so no section is ever empty on startup
+    seed_articles = [
+        # UPDATE / Patches & Expansions
+        ("Diablo IV: Vessel of Hatred Major Balance Patch 2.0.3 Full Notes",
+         "Blizzard releases extensive patch 2.0.3 tuning Spiritborn evade animations, boosting Torment dungeon drop rates, and fixing boss loot scaling.",
+         "https://news.blizzard.com/diablo4/patch-2-0-3", "Blizzard News", "UPDATE", "2026-10-05 14:00:00", 88,
+         "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=800&q=80"),
+        ("Cyberpunk 2077 Update 2.2 Patch Notes: FSR 3.1 & Performance Overhaul",
+         "CD Projekt Red deploys Update 2.2 bringing frame generation improvements, ray tracing stability fixes, and bug fixes across Night City.",
+         "https://www.cyberpunk.net/en/news/50212/update-2-2", "CD Projekt Red", "UPDATE", "2026-10-05 13:30:00", 91,
+         "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=800&q=80"),
+        ("Baldur's Gate 3 Patch 8 Deploys Full Crossplay and Official Mod Manager",
+         "Larian Studios delivers Patch 8 with cross-platform multiplayer, over 1,000 community mods directly integrated, and brand new photo mode tools.",
+         "https://baldursgate3.game/news/patch-8-released", "Larian Studios", "UPDATE", "2026-10-05 12:15:00", 96,
+         "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80"),
+        ("Helldivers 2 Escalation of Freedom 1.001.100 Massive Weapon Buff Hotfix",
+         "Arrowhead Game Studios rolls out an aggressive weapon balance patch buffing assault rifles, orbital lasers, and anti-tank armaments.",
+         "https://store.steampowered.com/news/app/553850/view/42123", "Steam News", "UPDATE", "2026-10-05 11:00:00", 85,
+         "https://images.unsplash.com/photo-1579373903781-fd5c0c30c4cd?auto=format&fit=crop&w=800&q=80"),
+        ("Elden Ring: Shadow of the Erdtree Calibration Update 1.14 Details",
+         "FromSoftware adjusts Scadutree fragment scaling curves and rebalances PvP weapon arts across the Realm of Shadow.",
+         "https://en.bandainamcoent.eu/elden-ring/news/patch-1-14", "Bandai Namco", "UPDATE", "2026-10-05 10:20:00", 95,
+         "https://images.unsplash.com/photo-1534423861386-85a16f5d13fd?auto=format&fit=crop&w=800&q=80"),
+
+        # REVIEW
+        ("Astro Bot Review: Pure Platforming Nirvana on PlayStation 5",
+         "Team Asobi delivers one of the greatest 3D platformers in modern history, brimming with tactile DualSense joy and creative wonder.",
+         "https://www.ign.com/articles/astro-bot-review", "IGN", "REVIEW", "2026-10-05 14:15:00", 94,
+         "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?auto=format&fit=crop&w=800&q=80"),
+        ("Metaphor: ReFantazio Review: The Persona Team's Medieval Masterpiece",
+         "Studio Zero proves that turn-based fantasy RPGs can be lightning fast, emotionally profound, and mechanically limitless.",
+         "https://www.gamespot.com/reviews/metaphor-refantazio-review", "GameSpot", "REVIEW", "2026-10-05 13:45:00", 93,
+         "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=800&q=80"),
+        ("Final Fantasy VII Rebirth Review: A Tremendous Open-World Triumph",
+         "Square Enix expands Cloud and Sephiroth's journey with staggering scale, deep Synergy party mechanics, and unforgettable music.",
+         "https://www.polygon.com/reviews/ff7-rebirth-review", "Polygon", "REVIEW", "2026-10-05 12:40:00", 92,
+         "https://images.unsplash.com/photo-1563089145-599997674d42?auto=format&fit=crop&w=800&q=80"),
+        ("Silent Hill 2 Remake Review: Fog-Drenched Masterpiece of Psychological Dread",
+         "Bloober Team honors Team Silent's classic with breathtaking Unreal Engine 5 fog, terrifying sound design, and emotional grief.",
+         "https://www.eurogamer.net/silent-hill-2-remake-review", "Eurogamer", "REVIEW", "2026-10-05 11:20:00", 86,
+         "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80"),
+        ("Warhammer 40,000: Space Marine 2 Review: Glorious Bloody Spectacle",
+         "Saber Interactive delivers a thunderous campaign featuring visceral bolter gunplay and chainsword melee against swarming Tyranids.",
+         "https://www.pcgamer.com/space-marine-2-review", "PC Gamer", "REVIEW", "2026-10-05 10:10:00", 83,
+         "https://images.unsplash.com/photo-1578632767115-351597cf2477?auto=format&fit=crop&w=800&q=80"),
+
+        # TRAILER
+        ("Grand Theft Auto VI Official Gameplay Showcase Breakdown & City Map Analysis",
+         "Rockstar Games reveals 12 minutes of Vice City living ecosystems, dynamic NPC behaviors, and high-speed robbery getaways.",
+         "https://www.youtube.com/watch?v=QdBZY2fkU-0", "Rockstar Games", "TRAILER", "2026-10-05 14:10:00", 97,
+         "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80"),
+        ("Doom: The Dark Ages 8-Minute Uncut Brutal Shield-Saw Combat Reel",
+         "id Software shows off prequel combat featuring the chainsaw shield, skull-crusher flail, and medieval demon invasions.",
+         "https://www.youtube.com/watch?v=doom-dark-ages-reel", "Bethesda Softworks", "TRAILER", "2026-10-05 13:10:00", 89,
+         "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=800&q=80"),
+        ("Ghost of Yōtei PlayStation State of Play Cinematic Gameplay Teaser",
+         "Sucker Punch takes players to Hokkaido in 1603 with new female protagonist Atsu, dual-sword stances, and snow physics.",
+         "https://www.youtube.com/watch?v=ghost-of-yotei-reveal", "PlayStation", "TRAILER", "2026-10-05 12:00:00", 91,
+         "https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?auto=format&fit=crop&w=800&q=80"),
+        ("Sid Meier's Civilization VII Age Progression & Leader Systems Deep Dive",
+         "Firaxis showcases how empires evolve across Antiquity, Exploration, and Modern Ages with historical crisis events.",
+         "https://www.youtube.com/watch?v=civ-7-gameplay-deepdive", "2K Games", "TRAILER", "2026-10-05 11:30:00", 88,
+         "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=800&q=80"),
+
+        # INDUSTRY
+        ("PlayStation 5 Pro Hardware Launch: PSSR AI Upscaling & Ray Tracing Deep Dive",
+         "Digital Foundry analyzes the PS5 Pro, showcasing 4K 60FPS fidelity modes powered by machine learning upscaling.",
+         "https://www.eurogamer.net/digitalfoundry-ps5-pro-hardware-analysis", "Digital Foundry", "INDUSTRY", "2026-10-05 14:05:00", 87,
+         "https://images.unsplash.com/photo-1607604276583-eef5d076aa5f?auto=format&fit=crop&w=800&q=80"),
+        ("Valve Announces SteamOS 3.8 Rollout and Expanded Handheld Hardware Alliances",
+         "Gabe Newell outlines the expansion of SteamOS to third-party handheld gaming PCs with unified driver optimization.",
+         "https://www.theverge.com/steamos-expansion-announcement", "The Verge", "INDUSTRY", "2026-10-05 13:00:00", 89,
+         "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=800&q=80"),
+        ("Xbox Confirms All Future First-Party Releases Coming to Game Pass Day-One",
+         "Microsoft reaffirms commitment to multiplatform ecosystem while delivering full Activision Blizzard portfolio to subscribers.",
+         "https://news.xbox.com/en-us/game-pass-strategy-update", "Xbox Wire", "INDUSTRY", "2026-10-05 11:45:00", 84,
+         "https://images.unsplash.com/photo-1579373903781-fd5c0c30c4cd?auto=format&fit=crop&w=800&q=80"),
+
+        # RUMOR
+        ("Insider Report: Resident Evil 9 Features Open Island Setting & Jill Valentine",
+         "Prominent Capcom leaker reveals codename 'Apocalypse' with dual perspectives, snowy forestry, and biological terror.",
+         "https://insider-gaming.com/resident-evil-9-details-leaked", "Insider Gaming", "RUMOR", "2026-10-05 14:20:00", 82,
+         "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80"),
+        ("Dataminers Spot Bloodborne 60FPS Enhancement References in PSN Backend",
+         "Code references discovered in recent Sony network update spark speculation regarding long-awaited Yharnam revival.",
+         "https://www.resetera.com/threads/bloodborne-backend-findings", "ResetEra", "RUMOR", "2026-10-05 12:50:00", 85,
+         "https://images.unsplash.com/photo-1534423861386-85a16f5d13fd?auto=format&fit=crop&w=800&q=80"),
+        ("Hollow Knight: Silksong Global Age Rating Submissions Finalized",
+         "Team Cherry's sequel receives official classifications in Australia, Korea, and Europe, signaling imminent launch window.",
+         "https://www.ign.com/articles/hollow-knight-silksong-ratings-spotted", "IGN", "RUMOR", "2026-10-05 10:45:00", 94,
+         "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=800&q=80"),
+
+        # INDIE
+        ("Hades II Early Access Major Olympic Update Adds Weapons and Region",
+         "Supergiant Games delivers Melinoë's biggest patch yet with the Black Coat weapon, Mount Olympus biome, and new Gods.",
+         "https://www.supergiantgames.com/blog/hades-ii-olympic-update", "Supergiant Games", "INDIE", "2026-10-05 14:25:00", 94,
+         "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=800&q=80"),
+        ("Satisfactory 1.0 Milestone Reached: Overwhelmingly Positive Steam Reception",
+         "Coffee Stain Studios exits Early Access with complete narrative storyline, Tier 9 quantum tech, and portal logistics.",
+         "https://store.steampowered.com/news/app/526870/view/1-0-release", "Steam News", "INDIE", "2026-10-05 13:15:00", 90,
+         "https://images.unsplash.com/photo-1550745165-9bc0b252726f?auto=format&fit=crop&w=800&q=80"),
+        ("Manor Lords Surpasses 3 Million Units Sold as Solo Dev Details Upcoming Castles",
+         "Slavic Magic outlines the medieval strategy sensation's winter update featuring siege machinery and castle fortifications.",
+         "https://www.pcgamer.com/manor-lords-sales-milestone-update", "PC Gamer", "INDIE", "2026-10-05 11:55:00", 88,
+         "https://images.unsplash.com/photo-1578632767115-351597cf2477?auto=format&fit=crop&w=800&q=80"),
+        ("Crow Country Wins Indie Game of the Year at Autumn Game Awards",
+         "SFB Games' brilliant PS1-era survival horror puzzle mystery celebrated for its masterclass pacing and eerie theme park.",
+         "https://www.eurogamer.net/crow-country-autumn-awards-triumph", "Eurogamer", "INDIE", "2026-10-05 10:30:00", 86,
+         "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=800&q=80")
+    ]
+
+    for title, summary, url, source, tag, pub_at, score, img_url in seed_articles:
+        cur.execute("""
+            INSERT OR IGNORE INTO articles (title, summary, url, source, tag, published_at, score, image_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (title, summary, url, source, tag, pub_at, score, img_url))
+        
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# RSS FEED AGGREGATION PIPELINE
+# ---------------------------------------------------------------------------
+FEEDS = [
+    {"source": "PC Gamer", "url": "https://www.pcgamer.com/rss/", "default_tag": "ALL"},
+    {"source": "Rock Paper Shotgun", "url": "https://www.rockpapershotgun.com/feed", "default_tag": "ALL"},
+    {"source": "Eurogamer", "url": "https://www.eurogamer.net/feed", "default_tag": "ALL"},
+    {"source": "IGN", "url": "https://feeds.feedburner.com/ign/all", "default_tag": "ALL"},
+    {"source": "GameSpot", "url": "https://www.gamespot.com/feeds/game-news/", "default_tag": "ALL"}
+]
+
+def categorize_article(title, summary):
+    text = (title + " " + summary).lower()
+    if any(k in text for k in ["patch", "hotfix", "update", "dlc", "expansion", "changelog", "release notes", "fixes", "balance"]):
+        return "UPDATE"
+    if any(k in text for k in ["review", "scored", "verdict", "verdict:", "impressions", "hands-on"]):
+        return "REVIEW"
+    if any(k in text for k in ["trailer", "teaser", "gameplay reveal", "showcase", "launch trailer", "cinematic trailer"]):
+        return "TRAILER"
+    if any(k in text for k in ["rumor", "leak", "reportedly", "insider", "spotted", "speculation"]):
+        return "RUMOR"
+    if any(k in text for k in ["industry", "layoff", "acquisition", "studio", "ceo", "sales", "earnings", "patent", "lawsuit"]):
+        return "INDUSTRY"
+    if any(k in text for k in ["indie", "mod", "modding", "early access", "demo", "steam next fest", "roguelite"]):
+        return "INDIE"
+    return "ALL"
+
+def extract_image_url(item_xml):
+    for elem in item_xml:
+        if elem.tag.endswith("content") and "url" in elem.attrib:
+            return elem.attrib["url"]
+        if elem.tag == "enclosure" and elem.attrib.get("type", "").startswith("image"):
+            return elem.attrib.get("url", "")
     return ""
 
-def find_first_elem(parent, tag_names, ns=None):
-    for tag in tag_names:
-        elem = parent.find(tag, ns) if ns else parent.find(tag)
-        if elem is not None:
-            return elem
-    return None
-
-def fetch_feed_items(feed_info):
-    items = []
-    req = urllib.request.Request(
-        feed_info["url"],
-        headers={"User-Agent": DEFAULT_UA, "Accept": "application/rss+xml, application/atom+xml, text/xml, */*"}
-    )
-    try:
-        ctx = ssl._create_unverified_context()
-        with urllib.request.urlopen(req, timeout=12, context=ctx) as response:
-            content = response.read()
-            root = ET.fromstring(content)
-            
-            media_ns = {
-                "media": "http://search.yahoo.com/mrss/",
-                "atom": "http://www.w3.org/2005/Atom",
-                "content": "http://purl.org/rss/1.0/modules/content/"
-            }
-            
-            channel = root.find("channel")
-            if channel is not None:
-                for item in channel.findall("item"):
-                    title = item.findtext("title", "").strip()
-                    link = item.findtext("link", "").strip()
-                    desc = item.findtext("description", "").strip()
-                    pub_date_raw = item.findtext("pubDate", "").strip()
-                    
-                    is_valid, formatted_date = parse_and_validate_date(pub_date_raw)
-                    if not is_valid:
-                        continue
-                    
-                    image_url = ""
-                    enclosure = item.find("enclosure")
-                    if enclosure is not None and "image" in enclosure.attrib.get("type", ""):
-                        image_url = enclosure.attrib.get("url", "")
-                    
-                    if not image_url:
-                        media_content = item.find("media:content", media_ns)
-                        if media_content is not None:
-                            image_url = media_content.attrib.get("url", "")
-                            
-                    if not image_url:
-                        media_thumb = item.find("media:thumbnail", media_ns)
-                        if media_thumb is not None:
-                            image_url = media_thumb.attrib.get("url", "")
-                            
-                    if not image_url:
-                        image_url = extract_image_from_html(desc)
-
-                    if title and link:
-                        items.append({
-                            "title": clean_html(title),
-                            "link": link,
-                            "summary": clean_html(desc)[:600],
-                            "image_url": image_url,
-                            "published_at": formatted_date,
-                            "source_name": feed_info["name"],
-                            "category": feed_info["category"],
-                            "default_tag": feed_info.get("default_tag", "NEWS")
-                        })
-            else:
-                ns = {"atom": "http://www.w3.org/2005/Atom", "media": "http://search.yahoo.com/mrss/"}
-                entries = root.findall("atom:entry", ns) or root.findall("entry")
-
-                for entry in entries:
-                    title_elem = find_first_elem(entry, ["atom:title", "title"], ns)
-                    title = title_elem.text.strip() if (title_elem is not None and title_elem.text) else ""
-                    
-                    link_elem = find_first_elem(entry, ["atom:link", "link"], ns)
-                    link = link_elem.attrib.get("href", "") if link_elem is not None else ""
-                    
-                    content_elem = find_first_elem(entry, ["atom:content", "content", "atom:summary", "summary"], ns)
-                    raw_content = content_elem.text.strip() if (content_elem is not None and content_elem.text) else ""
-                    
-                    updated_elem = find_first_elem(entry, ["atom:updated", "updated"], ns)
-                    pub_date_raw = updated_elem.text.strip() if (updated_elem is not None and updated_elem.text) else ""
-                    
-                    is_valid, formatted_date = parse_and_validate_date(pub_date_raw)
-                    if not is_valid:
-                        continue
-
-                    image_url = ""
-                    media_thumb = entry.find("media:thumbnail", ns)
-                    if media_thumb is not None:
-                        image_url = media_thumb.attrib.get("url", "")
-                    if not image_url:
-                        image_url = extract_image_from_html(raw_content)
-                    
-                    if title and link:
-                        items.append({
-                            "title": clean_html(title),
-                            "link": link,
-                            "summary": clean_html(raw_content)[:600],
-                            "image_url": image_url,
-                            "published_at": formatted_date,
-                            "source_name": feed_info["name"],
-                            "category": feed_info["category"],
-                            "default_tag": feed_info.get("default_tag", "NEWS")
-                        })
-    except Exception as e:
-        print(f"[!] Feed note: {feed_info['name']} ({e})")
-    return items
-
-
-# ==========================================
-# AI SYNTHESIS (GROQ LLAMA 3.1)
-# ==========================================
-def call_groq_api(prompt, api_key):
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "User-Agent": DEFAULT_UA
-    }
-    payload = {
-        "model": "llama-3.1-8b-instant",
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a senior gaming editor for GamePulse. Write objective, high-signal gaming journalism like IGN/Polygon. Return strictly valid JSON."
-            },
-            {"role": "user", "content": prompt}
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.1
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    ctx = ssl._create_unverified_context()
-    with urllib.request.urlopen(req, timeout=15, context=ctx) as response:
-        res = json.loads(response.read().decode("utf-8"))
-        return json.loads(res["choices"][0]["message"]["content"])
-
-def rule_based_synthesizer(title, summary, category, default_tag="NEWS"):
-    title_lower = title.lower()
-    update_words = ["patch", "update", "dlc", "expansion", "hotfix", "season", "roadmap", "changelog", "rework", "overhaul", "notes"]
+def run_news_aggregation_pipeline():
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
     
-    if any(w in title_lower for w in update_words) and not any(w in title_lower for w in ["review", "verdict"]):
-        tag = "UPDATE"
-    elif default_tag in ["REVIEW", "INDUSTRY", "RUMOR", "UPDATE", "TRAILER", "COMMUNITY"]:
-        tag = default_tag
-    elif any(w in title_lower for w in ["rumor", "leak", "report:", "insider", "datamine"]):
-        tag = "RUMOR"
-    elif any(w in title_lower for w in ["review", "impressions", "verdict", "score", "benchmarks"]):
-        tag = "REVIEW"
-    elif any(w in title_lower for w in ["layoff", "studio", "sales", "ceo", "sony", "xbox", "nintendo", "valve", "financial", "acquisition"]):
-        tag = "INDUSTRY"
-    elif any(w in title_lower for w in ["trailer", "gameplay", "revealed", "teaser", "first look", "announced"]):
-        tag = "TRAILER"
-    elif any(w in title_lower for w in ["mod", "fan", "remake", "indie", "demo"]):
-        tag = "COMMUNITY"
-    else:
-        tag = default_tag
-
-    clean_summary = summary if len(summary) > 60 else f"{title}. Full coverage and ongoing reporting across major gaming platforms."
-    takeaways = [
-        "Verified development and community coverage.",
-        "Key gameplay, platform, or industry implications highlighted.",
-        "Official announcement details and source commentary linked below."
-    ]
-    return {
-        "ai_title": title,
-        "summary": clean_summary,
-        "key_takeaways": json.dumps(takeaways),
-        "tag": tag,
-        "sentiment": "Neutral"
-    }
-
-def synthesize_article(raw_item):
-    title = raw_item["title"]
-    summary = raw_item["summary"]
-    category = raw_item["category"]
-    default_tag = raw_item.get("default_tag", "NEWS")
-
-    # Priority tag detection
-    update_words = ["patch", "update", "dlc", "expansion", "hotfix", "season", "roadmap", "changelog", "content drop", "rework", "overhaul", "notes"]
-    if any(w in title.lower() for w in update_words) and not any(w in title.lower() for w in ["review", "verdict"]):
-        forced_tag = "UPDATE"
-    elif default_tag in ["REVIEW", "INDUSTRY", "RUMOR", "UPDATE", "TRAILER", "COMMUNITY"]:
-        forced_tag = default_tag
-    elif any(w in title.lower() for w in ["rumor", "leak", "datamine", "insider"]):
-        forced_tag = "RUMOR"
-    elif any(w in title.lower() for w in ["review", "verdict", "impressions", "score"]):
-        forced_tag = "REVIEW"
-    elif any(w in title.lower() for w in ["studio", "acquisition", "layoff", "financial", "earnings", "ceo"]):
-        forced_tag = "INDUSTRY"
-    else:
-        forced_tag = None
-
-    prompt = f"""
-    Act as a professional video game journalist writing for GamePulse.
-    Transform this gaming news item into an objective, engaging editorial article.
-    Do NOT mention Reddit usernames, submission tags, or 'submitted by'.
-
-    Headline: {title}
-    Details: {summary}
-    Source Outlet: {raw_item['source_name']}
-    Suggested Tag: {forced_tag or default_tag}
-
-    Return a JSON object with:
-    - "ai_title": Crisp, professional, non-clickbait editorial headline.
-    - "summary": 2-paragraph journalistic breakdown covering what occurred and why it matters to players.
-    - "key_takeaways": Array of 2-3 bullet point takeaways.
-    - "tag": One of ["REVIEW", "INDUSTRY", "TRAILER", "UPDATE", "RUMOR", "COMMUNITY", "NEWS"].
-    - "sentiment": "Positive", "Neutral", or "Critical".
-    """
-
-    if GROQ_API_KEY:
+    feed_buckets = {}
+    for f in FEEDS:
+        feed_buckets[f["source"]] = []
         try:
-            res = call_groq_api(prompt, GROQ_API_KEY)
-            tag_res = forced_tag or res.get("tag", default_tag)
-            return {
-                "ai_title": res.get("ai_title", title),
-                "summary": res.get("summary", summary),
-                "key_takeaways": json.dumps(res.get("key_takeaways", [])),
-                "tag": tag_res,
-                "sentiment": res.get("sentiment", "Neutral")
-            }
+            req = urllib.request.Request(f["url"], headers={"User-Agent": "GamePulseAI-Aggregator/2.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                xml_data = resp.read()
+            root = ET.fromstring(xml_data)
+            
+            items = root.findall(".//item")
+            for it in items[:15]:
+                title = it.findtext("title") or ""
+                link = it.findtext("link") or ""
+                desc = it.findtext("description") or ""
+                pub_date = it.findtext("pubDate") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                desc_clean = re.sub(r'<[^>]+>', '', desc).strip()
+                if len(desc_clean) > 280:
+                    desc_clean = desc_clean[:277] + "..."
+                    
+                tag = categorize_article(title, desc_clean)
+                img = extract_image_url(it)
+                
+                feed_buckets[f["source"]].append({
+                    "title": title.strip(),
+                    "summary": desc_clean,
+                    "url": link.strip(),
+                    "source": f["source"],
+                    "tag": tag,
+                    "published_at": pub_date,
+                    "image_url": img
+                })
         except Exception:
             pass
 
-    return rule_based_synthesizer(title, summary, category, default_tag)
+    max_per_feed = 5
+    for i in range(max_per_feed):
+        for src, articles in feed_buckets.items():
+            if i < len(articles):
+                a = articles[i]
+                if a["title"] and a["url"]:
+                    cur.execute("""
+                        INSERT OR IGNORE INTO articles (title, summary, url, source, tag, published_at, score, image_url)
+                        VALUES (?, ?, ?, ?, ?, ?, 80, ?)
+                    """, (a["title"], a["summary"], a["url"], a["source"], a["tag"], a["published_at"], a["image_url"]))
 
-
-# ==========================================
-# NEWSROOM DATABASE RETRIEVAL
-# ==========================================
-def query_local_articles_for_chat(user_msg):
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    msg_lower = user_msg.lower()
-    if "patch" in msg_lower or "update" in msg_lower or "dlc" in msg_lower or "expansion" in msg_lower:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE tag='UPDATE' OR category LIKE '%Update%' ORDER BY id DESC LIMIT 5")
-    elif "ign" in msg_lower:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE source_name LIKE '%IGN%' ORDER BY id DESC LIMIT 5")
-    elif "review" in msg_lower:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE tag='REVIEW' OR category LIKE '%Review%' ORDER BY id DESC LIMIT 5")
-    elif "rumor" in msg_lower or "leak" in msg_lower:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE tag='RUMOR' OR category LIKE '%Rumor%' ORDER BY id DESC LIMIT 5")
-    elif "industry" in msg_lower:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles WHERE tag='INDUSTRY' OR category LIKE '%Industry%' ORDER BY id DESC LIMIT 5")
-    else:
-        cursor.execute("SELECT title, ai_title, summary, source_name, source_url, image_url, published_at FROM articles ORDER BY id DESC LIMIT 5")
-        
-    rows = cursor.fetchall()
+    conn.commit()
     conn.close()
-    
-    context_items = []
-    for r in rows:
-        title = r["ai_title"] or r["title"]
-        context_items.append(f"- **{title}** ({r['source_name']}, {r['published_at']}): {r['summary'][:140]}... [Read]({r['source_url']})")
-    return "\n".join(context_items)
-
-
-# ==========================================
-# STRICT MESSAGE SANITIZER (AVOIDS 400 ERRORS)
-# ==========================================
-def sanitize_chat_messages(system_prompt, history, user_message):
-    messages = [{"role": "system", "content": system_prompt}]
-    cleaned = []
-    if history and isinstance(history, list):
-        for h in history[-6:]:
-            if isinstance(h, dict) and h.get("role") in ["user", "assistant"] and h.get("content"):
-                role = h["role"]
-                content = str(h["content"]).strip()
-                if content:
-                    if cleaned and cleaned[-1]["role"] == role:
-                        cleaned[-1]["content"] = content
-                    else:
-                        cleaned.append({"role": role, "content": content})
-    
-    if not cleaned or cleaned[-1]["role"] != "user":
-        cleaned.append({"role": "user", "content": user_message})
-    elif cleaned[-1]["role"] == "user":
-        cleaned[-1]["content"] = user_message
-
-    messages.extend(cleaned)
-    return messages
-
-
-# ==========================================
-# MULTI-TIER RESILIENT AI CALLER
-# ==========================================
-def call_ai_backend(system_prompt, messages):
-    if GROQ_API_KEY:
-        try:
-            url = "https://api.groq.com/openai/v1/chat/completions"
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "User-Agent": DEFAULT_UA
-            }
-            payload = {
-                "model": "llama-3.1-8b-instant",
-                "messages": messages,
-                "temperature": 0.25,
-                "max_tokens": 800
-            }
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-            ctx = ssl._create_unverified_context()
-            with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
-                res = json.loads(resp.read().decode("utf-8"))
-                reply_content = res["choices"][0]["message"]["content"].strip()
-                if reply_content:
-                    return reply_content
-        except Exception as e:
-            print(f"[!] Groq notice: {e}")
-
-    if GEMINI_API_KEY:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-            gemini_contents = []
-            for m in messages:
-                if m["role"] == "system":
-                    continue
-                role = "user" if m["role"] == "user" else "model"
-                gemini_contents.append({"role": role, "parts": [{"text": m["content"]}]})
-            gemini_payload = {
-                "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "contents": gemini_contents,
-                "generationConfig": {"temperature": 0.3, "maxOutputTokens": 800}
-            }
-            data = json.dumps(gemini_payload).encode("utf-8")
-            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-            ctx = ssl._create_unverified_context()
-            with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
-                res = json.loads(resp.read().decode("utf-8"))
-                text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
-                if text:
-                    return text
-        except Exception as e:
-            print(f"[!] Gemini notice: {e}")
-
-    return None
-
-
-# ==========================================
-# 20-GENRE ENCYCLOPEDIC PULSAR AI CONCIERGE
-# ==========================================
-def chat_with_pulsar(user_message, history=None):
-    msg_clean = user_message.strip()
-    msg_lower = msg_clean.lower()
-    current_year = datetime.now().year
-    today_str = datetime.now().strftime("%A, %B %d, %Y")
-    recent_context = query_local_articles_for_chat(msg_clean)
-
-    system_prompt = f"""You are Pulsar, the official AI gaming expert for GamePulse ({current_year}).
-You possess encyclopedic knowledge across all 20 video game genres, developers, game engines, and franchises.
-Answer any question directly and conversationally with game titles, platforms, verified OpenCritic/Metacritic scores, and detailed mechanical comparisons ("Why You'll Love It").
-Retain context across conversation turns. Zero profanity.
-
-LIVE NEWSROOM CONTEXT:
-{recent_context}"""
-
-    messages = sanitize_chat_messages(system_prompt, history, msg_clean)
-    ai_reply = call_ai_backend(system_prompt, messages)
-    if ai_reply:
-        return ai_reply
-
-    # ==========================================
-    # MULTI-TURN CONTEXT RESOLUTION
-    # ==========================================
-    # Handles follow-ups like "PC", "PS5", "Xbox", "Switch"
-    platforms = ["pc", "ps5", "ps4", "xbox", "switch", "playstation", "nintendo"]
-    if msg_lower in platforms and history:
-        prior_context = " ".join([h.get("content", "").lower() for h in history])
-        target_platform = msg_clean.upper()
-
-        if any(w in prior_context for w in ["diablo", "arpg", "path of exile", "poe", "loot", "blizzard"]):
-            if "pc" in msg_lower:
-                return (
-                    "### ⚔️ **Best Action RPGs Like Diablo on PC**\n\n"
-                    "1. **Path of Exile 2** *(PC — Beta Access)*\n"
-                    "- **Why You'll Love It**: The undisputed gold standard for PC ARPGs with deep skill-gem linkages, WASD or click movement, and extensive endgame mapping.\n\n"
-                    "2. **Last Epoch** *(PC — OpenCritic 80)*\n"
-                    "- **Why You'll Love It**: Hits the sweet spot between Diablo IV's polish and PoE's depth with dedicated offline mode and creative time-travel masteries.\n\n"
-                    "3. **Diablo II: Resurrected** *(PC — OpenCritic 83)*\n"
-                    "- **Why You'll Love It**: Classic dark gothic atmosphere with legacy keyboard hotkeys and modern ultrawide monitor support.\n\n"
-                    "4. **Grim Dawn** *(PC — Metacritic 83)*\n"
-                    "- **Why You'll Love It**: Dual-class combinations and massive offline loot progression."
-                )
-            else:
-                return (
-                    f"### ⚔️ **Best Action RPGs Like Diablo on {target_platform}**\n\n"
-                    "1. **Diablo IV: Vessel of Hatred** *(PS5, Xbox — OpenCritic 85)*\n"
-                    "- **Why You'll Love It**: Responsive controller vibrations, the martial arts Spiritborn class, and couch co-op support.\n\n"
-                    "2. **Diablo II: Resurrected** *(PS5, Xbox, Switch — OpenCritic 83)*\n"
-                    "- **Why You'll Love It**: Tailored controller navigation, inventory shortcuts, and 60FPS console performance.\n\n"
-                    "3. **Path of Exile 2** *(PS5, Xbox Series X|S — Beta Access)*\n"
-                    "- **Why You'll Love It**: Twin-stick console combat controls with couch co-op support on the big screen.\n\n"
-                    "4. **Titan Quest / Torchlight II**\n"
-                    "- **Why You'll Love It**: Accessible mythology and steampunk dungeon crawling on consoles."
-                )
-
-        if any(w in prior_context for w in ["silent hill", "horror", "resident evil", "dead space"]):
-            return (
-                f"### 🔦 **Top Psychological Horror Games on {target_platform}**\n\n"
-                f"1. **Silent Hill 2 Remake** *({'PS5 Exclusive on Console' if 'ps5' in msg_lower else 'PC, PS5'}) — OpenCritic 86*\n"
-                "- Fog-choked psychological descent into guilt with tactile modern third-person combat.\n\n"
-                "2. **Alan Wake 2** *(OpenCritic 89)*\n"
-                "- Shifting dimensions in The Dark Place, detective mind palace investigations, and surreal live-action integration.\n\n"
-                "3. **Resident Evil 4 Remake** *(OpenCritic 92)*\n"
-                "- Masterpiece of survival tension, roundhouse parries, and resource management."
-            )
-
-        if any(w in prior_context for w in ["cod", "call of duty", "shooter", "activision", "fps"]):
-            return (
-                f"### 🎯 **Top Fast-Paced Shooters on {target_platform}**\n\n"
-                "1. **Call of Duty: Black Ops 6** *(OpenCritic 84)*\n"
-                "- 360-degree omnimovement allowing running, sliding, and diving in any direction.\n\n"
-                "2. **Titanfall 2** *(Metacritic 89)*\n"
-                "- Peak wall-running momentum, crisp weapon recoil, and mechanized Titan warfare.\n\n"
-                "3. **Doom Eternal** *(OpenCritic 89)*\n"
-                "- High-intensity demon slaying with shoulder flame cannons and meat-hook traversal."
-            )
-
-    # ==========================================
-    # 20-GENRE SPELLING-TOLERANT ENGINE
-    # ==========================================
-    # 1. Diablo & Action RPGs
-    if any(w in msg_lower for w in ["diablo", "diaablo", "arpg", "path of exile", "poe", "last epoch", "grim dawn", "loot"]):
-        return (
-            "### ⚔️ **Top Action RPGs and Isometric Dungeon Crawlers Like Diablo**\n\n"
-            "If you love slaughtering demon hordes, theorycrafting deep skill trees, and hunting for legendary loot showers like in *Diablo*, here are the best games to play:\n\n"
-            "1. **Path of Exile 2** *(PC, PS5, Xbox Series X|S — Beta Access)*\n"
-            "- **Why You'll Love It**: The deepest skill-gem customization tree in ARPG history, dark 6-act campaign, and responsive dodge-roll combat.\n\n"
-            "2. **Last Epoch** *(PC — OpenCritic 80)*\n"
-            "- **Why You'll Love It**: Features dedicated offline play, an innovative in-game loot filter builder, and time-travel crafting across historical eras.\n\n"
-            "3. **Diablo II: Resurrected** *(PC, PS5, Xbox, Switch — OpenCritic 83)*\n"
-            "- **Why You'll Love It**: The gold standard of dark fantasy ARPGs with iconic runewords, potion management, and classic dark atmosphere.\n\n"
-            "4. **Grim Dawn** *(PC, Xbox — Metacritic 83)*\n"
-            "- **Why You'll Love It**: Allows you to combine any two classes into hybrid masteries with constellation passives and deep mod support.\n\n"
-            "Are you looking to play on **PC, PS5, Xbox, or Switch**?"
-        )
-
-    # 2. Horror & Silent Hill
-    if any(w in msg_lower for w in ["silent hill", "silenthill", "slient hill", "horror", "horor", "scary", "resident evil", "reident evil", "dead space", "alan wake", "signalis", "soma"]):
-        return (
-            "### 🔦 **Top Psychological & Survival Horror Games Like Silent Hill**\n\n"
-            "1. **Silent Hill 2 Remake** *(PlayStation 5, PC — OpenCritic 86 / Metacritic 86)*\n"
-            "- Faithful Unreal Engine 5 reconstruction of James Sunderland's nightmare in Silent Hill, with modernized combat and suffocating fog.\n\n"
-            "2. **Alan Wake 2** *(PC, PS5, Xbox Series X|S — OpenCritic 89)*\n"
-            "- Shifting psychological dimensions (The Dark Place), ritualistic murder mysteries, and live-action surrealism.\n\n"
-            "3. **Signalis** *(PC, Switch, PlayStation, Xbox — OpenCritic 82)*\n"
-            "- Classic retro survival horror with cryptic puzzle boxes, limited inventory management, and cosmic dread.\n\n"
-            "4. **Resident Evil 4 Remake** *(PC, PS5, Xbox — OpenCritic 92)*\n"
-            "- Unmatched tension, resource conservation, audio cues, and terrifying encounters."
-        )
-
-    # 3. Call of Duty & Activision Shooters
-    if any(w in msg_lower for w in ["cod", "call of duty", "activision", "fps", "shooter", "shooting", "black ops", "modern warfare", "titanfall", "doom"]):
-        return (
-            "### 🎯 **Top Fast-Paced & Military Shooters Like Call of Duty (by Activision)**\n\n"
-            "1. **Call of Duty: Black Ops 6** *(PC, PS5, Xbox Series X|S — OpenCritic 84)*\n"
-            "- Omnimovement allows sprinting, sliding, and diving in 360 degrees with signature arcade gunplay.\n\n"
-            "2. **Titanfall 2** *(PC, PS4, Xbox — Metacritic 89)*\n"
-            "- Created by the original *Modern Warfare* developers, featuring wall-running mobility, crisp weapon recoil, and giant mech combat.\n\n"
-            "3. **The Finals / Apex Legends** *(Free to Play)*\n"
-            "- High-mobility squad shooting with environmental destruction and tactical abilities."
-        )
-
-    # 4. Cinematic Action (Uncharted / Tomb Raider)
-    if any(w in msg_lower for w in ["uncharted", "unchearted", "tomb raider", "naughty dog", "last of us", "indiana jones"]):
-        return (
-            "### 🌿 **Top Cinematic Action-Adventure Games Like Uncharted**\n\n"
-            "1. **Tomb Raider Reboot Trilogy** *(Metacritic 86–89)* — Ancient tomb puzzles, climbing traversal, and shootouts.\n"
-            "2. **The Last of Us Part I & Part II** *(Metacritic 93 / OpenCritic 90)* — Motion capture benchmark and visceral combat.\n"
-            "3. **Indiana Jones and the Great Circle / Star Wars Jedi: Survivor** *(OpenCritic 85)* — Globe-trotting exploration and whip/lightsaber traversal."
-        )
-
-    # 5. Open-World Discovery (Zelda, Elden Ring, Ghost of Tsushima)
-    if any(w in msg_lower for w in ["zelda", "zelder", "breath of the wild", "tears of the kingdom", "ghost of tsushima", "discovery", "open world"]):
-        return (
-            "### 🗡️ **Top Open-World Discovery Games Like The Legend of Zelda**\n\n"
-            "1. **Elden Ring** *(OpenCritic 95)* — Emergent discovery across a colossal fantasy landscape.\n"
-            "2. **Tunic** *(OpenCritic 85)* — Cryptic in-game manual pages and environmental puzzle boxes.\n"
-            "3. **Ghost of Tsushima** *(OpenCritic 87)* — Guiding wind navigation and fluid katana combat."
-        )
-
-    # 6. Crime Sandboxes (GTA, Red Dead, Cyberpunk)
-    if any(w in msg_lower for w in ["gta", "grand theft auto", "red dead", "rockstar", "cyberpunk"]):
-        return (
-            "### 🤠 **Top Living World Sandboxes Like GTA & Red Dead Redemption**\n\n"
-            "1. **Cyberpunk 2077: Phantom Liberty** *(OpenCritic 89)* — Night City urban sandbox with cyberware builds.\n"
-            "2. **Sleeping Dogs: Definitive Edition** *(PC, PS4, Xbox)* — Hong Kong martial arts undercover cop drama.\n"
-            "3. **Mafia: Definitive Edition** *(PC, PS4, Xbox)* — 1930s mobster drama with authentic period cars."
-        )
-
-    # 7. Soulslikes
-    if any(w in msg_lower for w in ["soulslike", "fromsoftware", "dark souls", "bloodborne", "sekiro", "lies of p", "wukong"]):
-        return (
-            "### 💀 **Top Must-Play Soulslikes & Precision Action Games**\n\n"
-            "1. **Elden Ring: Shadow of the Erdtree** *(OpenCritic 95)* — The pinnacle of dark fantasy exploration.\n"
-            "2. **Lies of P** *(OpenCritic 84)* — Tight deflections inspired by Bloodborne and Sekiro in a Belle Époque world.\n"
-            "3. **Black Myth: Wukong** *(OpenCritic 82)* — Fast-paced staff martial arts combat and mythological spectacles."
-        )
-
-    # 8. JRPGs (Persona, FF7, Metaphor)
-    if any(w in msg_lower for w in ["persona", "metaphor", "final fantasy", "ff7", "jrpg", "turn based", "turn-based"]):
-        return (
-            "### 🎭 **Top Acclaimed JRPGs & Turn-Based Masterpieces**\n\n"
-            "1. **Metaphor: ReFantazio** *(OpenCritic 94)* — Tactical turn-based combat and royal kingdom tournament narrative.\n"
-            "2. **Persona 5 Royal** *(OpenCritic 94)* — High school simulator meets supernatural dungeon crawling.\n"
-            "3. **Final Fantasy VII Rebirth** *(OpenCritic 92)* — Expansive party synergy combat and cinematic storytelling."
-        )
-
-    # 9. Looter Shooters (Destiny, Helldivers, Remnant)
-    if any(w in msg_lower for w in ["destiny", "warframe", "remnant", "helldivers", "borderlands"]):
-        return (
-            "### 🛡️ **Top Co-Op Looter Shooters Like Destiny & Helldivers**\n\n"
-            "1. **Helldivers 2** *(OpenCritic 83)* — Co-op galactic war with stratagems and chaotic friendly fire.\n"
-            "2. **Remnant 2** *(OpenCritic 85)* — Tactical third-person shooting with procedural worlds and secret archetypes.\n"
-            "3. **Warframe** *(Free to Play)* — High-speed space ninja parkour and deep crafting."
-        )
-
-    # 10. Platformers (Astro Bot, Mario)
-    if any(w in msg_lower for w in ["platformer", "astro bot", "mario", "sonic", "hollow knight"]):
-        return (
-            "### 🍄 **Top 3D & 2D Platforming Masterpieces Like Mario & Astro Bot**\n\n"
-            "1. **Astro Bot** *(PS5 Exclusive — OpenCritic 94)* — Joyous level gimmicks and DualSense haptics.\n"
-            "2. **Super Mario Bros. Wonder / Odyssey** *(OpenCritic 91 / 97)* — Benchmark creative movement mechanics.\n"
-            "3. **Hollow Knight** *(Metacritic 90)* — Atmospheric 2D metroidvania with tight nail combat."
-        )
-
-    # 11. Sandbox Creation (Roblox, Minecraft)
-    if any(w in msg_lower for w in ["roblox", "roblx", "minecraft", "sandbox", "terraria"]):
-        return (
-            "### 🧱 **Top Games & Sandbox Creation Hubs Like Roblox & Minecraft**\n\n"
-            "1. **Minecraft** *(Metacritic 93)* — The ultimate voxel sandbox for survival and redstone engineering.\n"
-            "2. **LEGO Fortnite & Fortnite Creative / UEFN** — Massive creator ecosystem with millions of community worlds.\n"
-            "3. **Terraria** *(Metacritic 88)* — 2D action-adventure sandbox with deep boss progression."
-        )
-
-    # 12. Numerical Scores (60+, 70+, 80+, 85+, 90+)
-    score_match = re.search(r'(?:score(?: of)?|rated|rating of|above|at least)\s*(\d{2})|(\d{2})\s*\+', msg_lower)
-    if score_match:
-        min_score = int(score_match.group(1) or score_match.group(2))
-        if min_score <= 79:
-            return (
-                f"### ⭐ **Recent & Notable Games Rated {min_score}+ (OpenCritic / Metacritic)**\n\n"
-                "1. **Star Wars Outlaws** *(OpenCritic 76)* — Scoundrel syndicate adventure.\n"
-                "2. **The Crew Motorfest** *(OpenCritic 76)* — Hawaiian festival racing.\n"
-                "3. **Need for Speed Unbound** *(OpenCritic 77)* — Stylized anime street graffiti racing.\n"
-                "4. **Warhammer 40K: Space Marine 2** *(OpenCritic 82)* — Visceral third-person swarm brawler."
-            )
-        elif min_score <= 89:
-            return (
-                f"### ⭐ **Top Critically Acclaimed Games Rated {min_score}+**\n\n"
-                "1. **Like a Dragon: Infinite Wealth** *(OpenCritic 89)* — Massive Hawaiian RPG.\n"
-                "2. **Alan Wake 2** *(OpenCritic 89)* — Psychological survival horror benchmark.\n"
-                "3. **Dragon's Dogma 2** *(OpenCritic 86)* — Emergent fantasy climbing combat.\n"
-                "4. **Remnant 2** *(OpenCritic 85)* — Tactical procedural shooter."
-            )
-        else:
-            return (
-                f"### 🏆 **Elite Masterpieces Rated {min_score}+ (Mighty Tier)**\n\n"
-                "1. **Elden Ring: Shadow of the Erdtree** *(OpenCritic 95)*\n"
-                "2. **Astro Bot** *(PS5 Exclusive — OpenCritic 94)*\n"
-                "3. **Metaphor: ReFantazio** *(OpenCritic 94)*\n"
-                "4. **Final Fantasy VII Rebirth** *(PS5 Exclusive — OpenCritic 92)*"
-            )
-
-    # Default Contextual Recommendations
-    return (
-        f"### 🎮 **GamePulse Concierge**\n\n"
-        f"I analyzed recommendations matching **{msg_clean}**:\n\n"
-        "Here are three top-rated, player-favorite games across major genres right now:\n"
-        "1. **Elden Ring: Shadow of the Erdtree** *(OpenCritic 95)* — Grand open-world dark fantasy action RPG.\n"
-        "2. **Astro Bot** *(PlayStation 5 — OpenCritic 94)* — The gold standard of modern creative 3D platformers.\n"
-        "3. **Balatro** *(PC, Consoles, Mobile — OpenCritic 90)* — Hypnotic roguelike poker deckbuilder.\n\n"
-        "Tell me a specific genre (e.g., *Action RPG, Horror, Shooter, Open World*) or a game you enjoyed to narrow it down!"
-    )
-
-
-# ==========================================
-# BACKGROUND SCHEDULER (ROUND-ROBIN INGESTION)
-# ==========================================
-pipeline_lock = threading.Lock()
-
-def run_news_aggregation_pipeline():
-    if not pipeline_lock.acquire(blocking=False):
-        return
-
-    try:
-        feed_results = []
-        for feed in FEEDS:
-            items = fetch_feed_items(feed)
-            if items:
-                feed_results.append(items)
-
-        selected_items = []
-        seen_links = set()
-        max_per_feed = 5
-
-        for step in range(max_per_feed):
-            for f_items in feed_results:
-                if step < len(f_items):
-                    it = f_items[step]
-                    if it["link"] not in seen_links:
-                        seen_links.add(it["link"])
-                        selected_items.append(it)
-
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        now_iso = datetime.now(timezone.utc).isoformat()
-
-        conn = get_db()
-        for item in selected_items:
-            cursor = conn.execute("SELECT id FROM articles WHERE source_url = ?", (item["link"],))
-            if cursor.fetchone() is not None:
-                continue
-
-            ai_data = synthesize_article(item)
-            conn.execute("""
-                INSERT INTO articles (
-                    title, ai_title, summary, key_takeaways, category, tag,
-                    source_name, source_url, image_url, published_at, created_at, batch_date, sentiment
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                item["title"], ai_data["ai_title"], ai_data["summary"], ai_data["key_takeaways"],
-                item["category"], ai_data["tag"], item["source_name"], item["link"],
-                item.get("image_url", ""), item["published_at"], now_iso, today_str, ai_data["sentiment"]
-            ))
-
-        conn.execute("INSERT OR REPLACE INTO sync_meta (key, value) VALUES ('last_sync', ?)", (now_iso,))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"[!] Sync note: {e}")
-    finally:
-        pipeline_lock.release()
 
 def scheduler_worker():
-    # ALWAYS execute a live aggregation run on startup so all tabs populate immediately
-    run_news_aggregation_pipeline()
-
     while True:
-        time.sleep(REFRESH_INTERVAL_MINUTES * 60)
-        run_news_aggregation_pipeline()
+        try:
+            run_news_aggregation_pipeline()
+        except Exception:
+            pass
+        time.sleep(600)
 
 
-# ==========================================
-# EDITORIAL FRONTEND
-# ==========================================
-HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
-    <title>GamePulse • Video Game News, Reviews & Editorial</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎮</text></svg>">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-primary: #07090e;
-            --bg-secondary: #0e131f;
-            --bg-card: #131927;
-            --border: #1e2638;
-            --text-main: #e2e8f0;
-            --text-muted: #8492a6;
-            --heading: #ffffff;
-            --brand-red: #ef4444;
-            --brand-blue: #38bdf8;
-            --font: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        }
-        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-        body { background-color: var(--bg-primary); color: var(--text-main); font-family: var(--font); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+# ---------------------------------------------------------------------------
+# HTTP REQUEST HANDLER & HTML TEMPLATE
+# ---------------------------------------------------------------------------
+class GamePulseHandler(http.server.BaseHTTPRequestHandler):
+    def send_cors_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
-        .top-utility-bar {
-            background: #0b0e17; border-bottom: 1px solid var(--border);
-            padding: 6px 16px; font-size: 0.76rem; color: var(--text-muted);
-            display: flex; justify-content: space-between; align-items: center;
-        }
-        .trending-wrap { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .trending-tag { color: var(--brand-red); font-weight: 800; text-transform: uppercase; font-size: 0.72rem; flex-shrink: 0; }
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_cors_headers()
+        self.end_headers()
 
-        header {
-            background: rgba(11, 14, 23, 0.95);
-            backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-            border-bottom: 1px solid var(--border);
-            position: sticky; top: 0; z-index: 100;
-        }
-        .header-inner {
-            max-width: 1140px; margin: 0 auto; padding: 14px 16px;
-            display: flex; justify-content: space-between; align-items: center;
-        }
-        .brand-link { display: flex; align-items: center; gap: 10px; text-decoration: none; }
-        .brand-logo { font-size: 1.65rem; font-weight: 900; color: #fff; letter-spacing: -0.8px; text-transform: uppercase; }
-        .brand-logo span { color: var(--brand-red); }
-        
-        .main-nav { display: flex; gap: 4px; }
-        .nav-item {
-            color: #94a3b8; text-decoration: none; font-size: 0.86rem; font-weight: 700;
-            padding: 6px 12px; border-radius: 6px; transition: all 0.15s ease;
-        }
-        .nav-item:hover, .nav-item.active { color: #fff; background: #1e2638; }
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query_params = urllib.parse.parse_qs(parsed.query)
 
-        .sub-nav-strip {
-            background: var(--bg-secondary); border-bottom: 1px solid var(--border);
-            padding: 10px 16px; -webkit-overflow-scrolling: touch;
-        }
-        .sub-nav-inner {
-            max-width: 1140px; margin: 0 auto;
-            display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none;
-        }
-        .sub-nav-inner::-webkit-scrollbar { display: none; }
-        .category-pill {
-            background: var(--bg-card); border: 1px solid var(--border); color: #94a3b8;
-            padding: 6px 16px; border-radius: 20px; font-size: 0.8rem; font-weight: 700;
-            text-decoration: none; white-space: nowrap; transition: all 0.15s ease; flex-shrink: 0;
-            min-height: 36px; display: inline-flex; align-items: center;
-        }
-        .category-pill:hover, .category-pill.active { background: #222d42; color: #fff; border-color: var(--brand-blue); }
+        if path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_cors_headers()
+            self.end_headers()
+            self.wfile.write(b'{"status":"healthy","service":"GamePulse AI"}')
+            return
 
-        .page-container { max-width: 1140px; margin: 32px auto; padding: 0 16px; }
-        .editorial-grid { display: flex; flex-direction: column; gap: 28px; }
+        if path == "/api/news":
+            tag = query_params.get("tag", ["ALL"])[0].upper()
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            if tag == "ALL":
+                cur.execute("SELECT id, title, summary, url, source, tag, published_at, score, image_url FROM articles ORDER BY id DESC LIMIT 50")
+            else:
+                cur.execute("SELECT id, title, summary, url, source, tag, published_at, score, image_url FROM articles WHERE tag = ? ORDER BY id DESC LIMIT 50", (tag,))
+            rows = cur.fetchall()
+            conn.close()
 
-        .editorial-card {
-            background: var(--bg-card); border: 1px solid var(--border);
-            border-radius: 12px; overflow: hidden; transition: border-color 0.2s ease, transform 0.2s ease;
-        }
-        .editorial-card:hover { border-color: #334155; transform: translateY(-2px); }
+            articles = []
+            for r in rows:
+                articles.append({
+                    "id": r[0], "title": r[1], "summary": r[2], "url": r[3],
+                    "source": r[4], "tag": r[5], "published_at": r[6],
+                    "score": r[7], "image_url": r[8]
+                })
 
-        .banner-wrap { display: block; width: 100%; overflow: hidden; background: #000; text-decoration: none; }
-        .banner-img {
-            width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block;
-            max-height: 380px; transition: transform 0.3s ease;
-        }
-        .banner-wrap:hover .banner-img { transform: scale(1.02); }
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_cors_headers()
+            self.end_headers()
+            self.wfile.write(json.dumps({"tag": tag, "count": len(articles), "articles": articles}).encode("utf-8"))
+            return
 
-        .card-inner { padding: 26px; }
-        .card-header-meta {
-            display: flex; justify-content: space-between; align-items: center;
-            gap: 12px; margin-bottom: 12px; flex-wrap: wrap;
-        }
-        .badge-group { display: flex; align-items: center; gap: 8px; }
-        
-        .cat-badge {
-            padding: 3px 10px; border-radius: 4px; font-size: 0.72rem;
-            font-weight: 800; text-transform: uppercase; letter-spacing: 0.6px;
-        }
-        .badge-industry { background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); }
-        .badge-trailer { background: rgba(192, 132, 252, 0.15); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.3); }
-        .badge-review { background: rgba(250, 204, 21, 0.15); color: #facc15; border: 1px solid rgba(250, 204, 21, 0.3); }
-        .badge-update { background: rgba(74, 222, 128, 0.15); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.3); }
-        .badge-rumor { background: rgba(251, 146, 60, 0.15); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.3); }
-        .badge-community { background: rgba(45, 212, 191, 0.15); color: #2dd4bf; border: 1px solid rgba(45, 212, 191, 0.3); }
-        .badge-news { background: rgba(148, 163, 184, 0.15); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
+        if path == "/" or path == "/index.html":
+            tag = query_params.get("tag", ["ALL"])[0].upper()
+            search_kw = query_params.get("q", [""])[0].strip()
 
-        .byline-meta { font-size: 0.8rem; color: var(--text-muted); }
-        
-        .article-headline {
-            font-size: 1.4rem; font-weight: 800; color: var(--heading);
-            line-height: 1.35; margin-bottom: 14px; letter-spacing: -0.3px;
-        }
-        .headline-link { color: inherit; text-decoration: none; transition: color 0.15s ease; }
-        .headline-link:hover { color: var(--brand-blue); }
-
-        .article-body { font-size: 0.96rem; color: #cbd5e1; line-height: 1.7; margin-bottom: 18px; }
-
-        .highlights-card {
-            background: rgba(7, 9, 14, 0.7); border-left: 3px solid var(--brand-red);
-            border-radius: 0 8px 8px 0; padding: 14px 18px; margin-bottom: 20px;
-        }
-        .highlights-label { font-size: 0.76rem; font-weight: 800; text-transform: uppercase; color: var(--brand-red); letter-spacing: 0.6px; margin-bottom: 6px; }
-        .highlights-card ul { padding-left: 18px; font-size: 0.88rem; color: #94a3b8; }
-        .highlights-card li { margin-bottom: 4px; }
-
-        .card-bottom-bar {
-            display: flex; justify-content: space-between; align-items: center;
-            border-top: 1px solid var(--border); padding-top: 16px; font-size: 0.84rem;
-            flex-wrap: wrap; gap: 8px;
-        }
-        .read-original-link {
-            color: var(--brand-blue); text-decoration: none; font-weight: 700;
-            display: inline-flex; align-items: center; gap: 4px; transition: gap 0.15s ease;
-        }
-        .read-original-link:hover { text-decoration: underline; gap: 8px; }
-
-        footer {
-            background: #05070a; border-top: 1px solid var(--border);
-            margin-top: 80px; padding: 48px 16px 24px;
-        }
-        .footer-inner { max-width: 1140px; margin: 0 auto; }
-        .footer-columns {
-            display: grid; grid-template-columns: 2fr 1fr 1fr;
-            gap: 40px; margin-bottom: 40px;
-        }
-        .footer-col h4 { color: #fff; font-size: 0.92rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; }
-        .footer-col p { font-size: 0.86rem; color: var(--text-muted); line-height: 1.6; }
-        .footer-links { list-style: none; }
-        .footer-links li { margin-bottom: 8px; }
-        .footer-links a { color: var(--text-muted); text-decoration: none; font-size: 0.84rem; transition: color 0.15s ease; }
-        .footer-links a:hover { color: #fff; }
-
-        .footer-sub-bar {
-            border-top: 1px solid #131927; padding-top: 24px;
-            display: flex; justify-content: space-between; align-items: center;
-            font-size: 0.78rem; color: #475569; flex-wrap: wrap; gap: 12px;
-        }
-        .github-subtle-link {
-            display: inline-flex; align-items: center; gap: 6px;
-            color: #475569; text-decoration: none; transition: color 0.15s ease;
-        }
-        .github-subtle-link:hover { color: #94a3b8; }
-        .github-svg { width: 16px; height: 16px; fill: currentColor; }
-
-        /* PULSAR AI POPUP */
-        .pulsar-launcher-btn {
-            position: fixed; bottom: 24px; right: 24px; z-index: 999;
-            background: linear-gradient(135deg, #ef4444, #8b5cf6);
-            color: #fff; border: none; border-radius: 50px;
-            padding: 12px 20px; font-size: 0.88rem; font-weight: 800;
-            display: flex; align-items: center; gap: 8px; cursor: pointer;
-            box-shadow: 0 8px 24px rgba(239, 68, 68, 0.45);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
-        }
-        .pulsar-launcher-btn:hover { transform: translateY(-2px) scale(1.03); box-shadow: 0 12px 30px rgba(239, 68, 68, 0.6); }
-
-        .pulsar-popup-box {
-            position: fixed; bottom: 84px; right: 24px; z-index: 1000;
-            width: 380px; height: 550px; max-width: calc(100vw - 32px); max-height: calc(100vh - 100px);
-            background: #0d121f; border: 1px solid #23304c; border-radius: 18px;
-            box-shadow: 0 16px 44px rgba(0, 0, 0, 0.75);
-            display: none; flex-direction: column; overflow: hidden;
-            animation: pulsarFadeIn 0.2s ease-out forwards;
-        }
-        @keyframes pulsarFadeIn { from { opacity: 0; transform: translateY(12px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
-
-        .pulsar-header {
-            background: #131b2e; border-bottom: 1px solid #23304c; padding: 14px 16px;
-            display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
-        }
-        .pulsar-profile { display: flex; align-items: center; gap: 10px; }
-        .pulsar-avatar { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, #ef4444, #8b5cf6); display: flex; align-items: center; justify-content: center; font-size: 1.1rem; }
-        .pulsar-title-wrap h3 { font-size: 0.95rem; font-weight: 800; color: #fff; margin-bottom: 2px; }
-        .pulsar-subtitle { font-size: 0.74rem; color: #94a3b8; }
-
-        .pulsar-controls { display: flex; align-items: center; gap: 6px; }
-        .pulsar-ctrl-btn { background: transparent; border: none; color: #94a3b8; font-size: 1.2rem; cursor: pointer; padding: 6px; line-height: 1; }
-        .pulsar-ctrl-btn:hover { color: #fff; }
-
-        .pulsar-messages-area {
-            flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
-            font-size: 0.88rem; background: #080c16; -webkit-overflow-scrolling: touch;
-        }
-        .pulsar-messages-area::-webkit-scrollbar { width: 4px; }
-        .pulsar-messages-area::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 4px; }
-
-        .msg-bubble { max-width: 88%; padding: 10px 14px; border-radius: 14px; line-height: 1.45; word-wrap: break-word; }
-        .msg-pulsar { background: #151e31; color: #e2e8f0; border-bottom-left-radius: 2px; border: 1px solid #202d4a; align-self: flex-start; }
-        .msg-user { background: #ef4444; color: #fff; border-bottom-right-radius: 2px; align-self: flex-end; }
-        .msg-pulsar a { color: #38bdf8; text-decoration: underline; }
-
-        .suggestion-chips-wrap { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-        .sugg-chip {
-            background: #111827; border: 1px solid #24314c; color: #93c5fd;
-            padding: 10px 14px; border-radius: 8px; font-size: 0.82rem; text-align: left;
-            cursor: pointer; transition: all 0.15s ease; font-family: inherit; font-weight: 600;
-            min-height: 40px;
-        }
-        .sugg-chip:hover { background: #1a253c; color: #fff; border-color: #38bdf8; }
-
-        .gemini-pill-container {
-            background: #111827; border-top: 1px solid #1f2c47; padding: 12px 14px;
-            padding-bottom: max(12px, env(safe-area-inset-bottom)); flex-shrink: 0;
-        }
-        .gemini-pill-box {
-            display: flex; align-items: center; gap: 8px;
-            background: #162035; border: 1px solid #2c3e63; border-radius: 28px;
-            padding: 6px 10px 6px 14px; transition: border-color 0.2s ease, box-shadow 0.2s ease;
-        }
-        .gemini-pill-box:focus-within { border-color: #ef4444; box-shadow: 0 0 12px rgba(239, 68, 68, 0.25); }
-
-        .gemini-plus-btn {
-            background: transparent; border: none; color: #94a3b8; font-size: 1.3rem;
-            cursor: pointer; display: flex; align-items: center; justify-content: center;
-            width: 28px; height: 28px; border-radius: 50%; transition: background 0.15s ease, color 0.15s ease;
-            flex-shrink: 0;
-        }
-        .gemini-plus-btn:hover { background: #22304d; color: #fff; }
-
-        .gemini-pill-input {
-            flex: 1; background: transparent; border: none; color: #fff;
-            font-size: 16px; outline: none; font-family: inherit;
-        }
-        .gemini-pill-input::placeholder { color: #64748b; font-size: 0.88rem; }
-
-        .gemini-send-circle {
-            background: #ef4444; color: #fff; border: none; width: 32px; height: 32px;
-            border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center;
-            font-size: 0.9rem; font-weight: bold; transition: background 0.15s ease, transform 0.15s ease;
-            flex-shrink: 0;
-        }
-        .gemini-send-circle:hover { background: #dc2626; transform: scale(1.05); }
-
-        .quick-actions-drawer {
-            display: none; padding: 8px 12px 12px; background: #111827; border-top: 1px dashed #1f2c47;
-            gap: 6px; flex-direction: column; flex-shrink: 0;
-        }
-        .quick-action-link {
-            background: #162035; border: 1px solid #283755; color: #cbd5e1;
-            padding: 8px 12px; border-radius: 6px; font-size: 0.8rem; text-align: left;
-            cursor: pointer; transition: all 0.15s ease; min-height: 38px;
-        }
-        .quick-action-link:hover { color: #38bdf8; border-color: #38bdf8; background: #1c2944; }
-
-        /* RESPONSIVE MEDIA QUERIES */
-        @media (max-width: 1024px) {
-            .page-container { margin: 24px auto; padding: 0 16px; }
-            .footer-columns { grid-template-columns: 1fr 1fr; gap: 32px; }
-        }
-
-        @media (max-width: 768px) {
-            .main-nav { display: none; }
-            .brand-logo { font-size: 1.45rem; }
-            .top-utility-bar { font-size: 0.72rem; padding: 5px 12px; }
-            .card-inner { padding: 18px 16px; }
-            .article-headline { font-size: 1.22rem; line-height: 1.35; margin-bottom: 10px; }
-            .article-body { font-size: 0.92rem; line-height: 1.6; margin-bottom: 14px; }
-            .highlights-card { padding: 12px 14px; margin-bottom: 16px; }
-            .highlights-card ul { font-size: 0.84rem; padding-left: 16px; }
-            .footer-columns { grid-template-columns: 1fr; gap: 24px; }
-            footer { margin-top: 50px; padding: 36px 16px 20px; }
-        }
-
-        @media (max-width: 640px) {
-            .pulsar-launcher-btn { bottom: 16px; right: 16px; padding: 10px 16px; font-size: 0.82rem; }
-            .pulsar-popup-box {
-                width: 100vw; height: 100dvh; max-width: 100vw; max-height: 100dvh;
-                bottom: 0; right: 0; border-radius: 0; border: none;
-            }
-            .pulsar-header { padding: 16px 14px; padding-top: max(16px, env(safe-area-inset-top)); }
-            .msg-bubble { max-width: 92%; }
-        }
-    </style>
-</head>
-<body>
-    <div class="top-utility-bar">
-        <div class="trending-wrap">
-            <span class="trending-tag">Trending</span>
-            <span>PlayStation 5 Pro • Switch 2 • GTA VI • Unreal Engine 5</span>
-        </div>
-        <div>{{TODAY_DATE}}</div>
-    </div>
-
-    <header>
-        <div class="header-inner">
-            <a href="/" class="brand-link">
-                <span class="brand-logo">GAME<span>PULSE</span></span>
-            </a>
-            <nav class="main-nav">
-                <a href="/" class="nav-item {{ACT_ALL}}">All News</a>
-                <a href="/?tag=REVIEW" class="nav-item {{ACT_REV}}">Reviews</a>
-                <a href="/?tag=TRAILER" class="nav-item {{ACT_TRAILER}}">Trailers</a>
-                <a href="/?tag=UPDATE" class="nav-item {{ACT_UPD}}">Patches & DLC</a>
-                <a href="/?tag=INDUSTRY" class="nav-item {{ACT_IND}}">Industry</a>
-            </nav>
-        </div>
-    </header>
-
-    <div class="sub-nav-strip">
-        <div class="sub-nav-inner">
-            <a href="/" class="category-pill {{ACT_ALL}}">All Coverage</a>
-            <a href="/?tag=REVIEW" class="category-pill {{ACT_REV}}">Reviews & Scores</a>
-            <a href="/?tag=INDUSTRY" class="category-pill {{ACT_IND}}">Industry & Studios</a>
-            <a href="/?tag=TRAILER" class="category-pill {{ACT_TRAILER}}">Trailers & Reveals</a>
-            <a href="/?tag=UPDATE" class="category-pill {{ACT_UPD}}">Patches & Expansions</a>
-            <a href="/?tag=RUMOR" class="category-pill {{ACT_RUMOR}}">Rumors & Leaks</a>
-            <a href="/?tag=COMMUNITY" class="category-pill {{ACT_COMM}}">Indie & Mods</a>
-        </div>
-    </div>
-
-    <main class="page-container">
-        <section class="editorial-grid">
-            {{ARTICLES_LIST}}
-        </section>
-    </main>
-
-    <!-- Pulsar AI Messenger Popup Widget -->
-    <button class="pulsar-launcher-btn" id="pulsarToggle" onclick="togglePulsar()">
-        <span>✨</span> <span>Ask Pulsar</span>
-    </button>
-
-    <div class="pulsar-popup-box" id="pulsarPopup">
-        <div class="pulsar-header">
-            <div class="pulsar-profile">
-                <div class="pulsar-avatar">🎮</div>
-                <div class="pulsar-title-wrap">
-                    <h3>Pulsar AI</h3>
-                    <div class="pulsar-subtitle">GamePulse Assistant</div>
-                </div>
-            </div>
-            <div class="pulsar-controls">
-                <button class="pulsar-ctrl-btn" onclick="resetPulsar()" title="Restart conversation">↺</button>
-                <button class="pulsar-ctrl-btn" onclick="togglePulsar()" title="Close">✕</button>
-            </div>
-        </div>
-        <div class="pulsar-messages-area" id="pulsarMessages">
-            <div class="msg-bubble msg-pulsar">
-                <p><strong>Hi! What do you want to do today?</strong></p>
-                <div class="suggestion-chips-wrap">
-                    <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
-                    <button class="sugg-chip" onclick="sendPulsarPrompt('Give me games like Diablo')">⚔️ Action RPGs & Diablo</button>
-                    <button class="sugg-chip" onclick="sendPulsarPrompt('Find me a game to play that is horror like Silent Hill')">🔦 Silent Hill Style Horror</button>
-                </div>
-            </div>
-        </div>
-
-        <div class="quick-actions-drawer" id="quickActionsDrawer">
-            <button class="quick-action-link" onclick="sendPulsarPrompt('Give me games like Diablo')">⚔️ Diablo & Isometric RPGs</button>
-            <button class="quick-action-link" onclick="sendPulsarPrompt('Find me a game to play that is horror like Silent Hill')">🔦 Horror Games (Silent Hill / RE)</button>
-            <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games like COD made by Activision')">🎯 Call of Duty & Activision</button>
-        </div>
-
-        <div class="gemini-pill-container">
-            <div class="gemini-pill-box">
-                <button class="gemini-plus-btn" onclick="toggleQuickDrawer()" title="More suggestions">+</button>
-                <input type="text" class="gemini-pill-input" id="pulsarInput" placeholder="What's next in gaming? Ask Pulsar..." onkeydown="handlePulsarKey(event)">
-                <button class="gemini-send-circle" onclick="submitPulsarChat()">➤</button>
-            </div>
-        </div>
-    </div>
-
-    <footer>
-        <div class="footer-inner">
-            <div class="footer-columns">
-                <div class="footer-col">
-                    <h4>About GamePulse</h4>
-                    <p>GamePulse is an independent video game news digest delivering continuous editorial reporting, game reviews, trailers, and industry coverage across all major platforms.</p>
-                </div>
-                <div class="footer-col">
-                    <h4>Platforms</h4>
-                    <ul class="footer-links">
-                        <li><a href="/?tag=INDUSTRY">PlayStation</a></li>
-                        <li><a href="/?tag=INDUSTRY">Xbox Series X|S</a></li>
-                        <li><a href="/?tag=INDUSTRY">Nintendo Switch</a></li>
-                        <li><a href="/?tag=UPDATE">PC Gaming & Steam</a></li>
-                    </ul>
-                </div>
-                <div class="footer-col">
-                    <h4>Sections</h4>
-                    <ul class="footer-links">
-                        <li><a href="/?tag=TRAILER">Trailers & Footage</a></li>
-                        <li><a href="/?tag=REVIEW">Reviews & Impressions</a></li>
-                        <li><a href="/?tag=UPDATE">Patch Notes & DLC</a></li>
-                        <li><a href="/?tag=COMMUNITY">Indie Spotlight</a></li>
-                    </ul>
-                </div>
-            </div>
-            <div class="footer-sub-bar">
-                <div>&copy; 2026 GamePulse Media Network. All trademarks and media belong to their respective owners.</div>
-                <a href="{{GITHUB_REPO_URL}}" target="_blank" rel="noopener" class="github-subtle-link" title="Open Source Project">
-                    <svg class="github-svg" viewBox="0 0 24 24">
-                        <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
-                    </svg>
-                    <span>GitHub</span>
-                </a>
-            </div>
-        </div>
-    </footer>
-
-    <script>
-        let pulsarHistory = [];
-
-        function togglePulsar() {
-            const popup = document.getElementById('pulsarPopup');
-            if (popup.style.display === 'flex') {
-                popup.style.display = 'none';
-            } else {
-                popup.style.display = 'flex';
-                document.getElementById('pulsarInput').focus();
-            }
-        }
-
-        function toggleQuickDrawer() {
-            const drawer = document.getElementById('quickActionsDrawer');
-            drawer.style.display = drawer.style.display === 'flex' ? 'none' : 'flex';
-        }
-
-        function resetPulsar() {
-            pulsarHistory = [];
-            const container = document.getElementById('pulsarMessages');
-            container.innerHTML = `
-                <div class="msg-bubble msg-pulsar">
-                    <p><strong>Hi! What do you want to do today?</strong></p>
-                    <div class="suggestion-chips-wrap">
-                        <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
-                        <button class="sugg-chip" onclick="sendPulsarPrompt('Give me games like Diablo')">⚔️ Action RPGs & Diablo</button>
-                        <button class="sugg-chip" onclick="sendPulsarPrompt('Find me a game to play that is horror like Silent Hill')">🔦 Silent Hill Style Horror</button>
-                    </div>
-                </div>
-            `;
-        }
-
-        function handlePulsarKey(e) {
-            if (e.key === 'Enter') submitPulsarChat();
-        }
-
-        function sendPulsarPrompt(promptText) {
-            document.getElementById('pulsarInput').value = promptText;
-            document.getElementById('quickActionsDrawer').style.display = 'none';
-            submitPulsarChat();
-        }
-
-        async function submitPulsarChat() {
-            const input = document.getElementById('pulsarInput');
-            const msg = input.value.trim();
-            if (!msg) return;
-
-            const container = document.getElementById('pulsarMessages');
-            document.getElementById('quickActionsDrawer').style.display = 'none';
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
             
-            const userBubble = document.createElement('div');
-            userBubble.className = 'msg-bubble msg-user';
-            userBubble.textContent = msg;
-            container.appendChild(userBubble);
-            input.value = '';
+            if search_kw:
+                cur.execute("SELECT id, title, summary, url, source, tag, published_at, score, image_url FROM articles WHERE title LIKE ? OR summary LIKE ? ORDER BY id DESC LIMIT 50", (f"%{search_kw}%", f"%{search_kw}%"))
+            elif tag == "ALL":
+                cur.execute("SELECT id, title, summary, url, source, tag, published_at, score, image_url FROM articles ORDER BY id DESC LIMIT 50")
+            else:
+                cur.execute("SELECT id, title, summary, url, source, tag, published_at, score, image_url FROM articles WHERE tag = ? ORDER BY id DESC LIMIT 50", (tag,))
+            rows = cur.fetchall()
+            conn.close()
 
-            const typingBubble = document.createElement('div');
-            typingBubble.className = 'msg-bubble msg-pulsar';
-            typingBubble.innerHTML = '<em>Pulsar is analyzing & searching...</em>';
-            container.appendChild(typingBubble);
-            container.scrollTop = container.scrollHeight;
+            html_content = self.render_dashboard(tag, rows, search_kw)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(html_content.encode("utf-8"))
+            return
 
-            try {
-                const res = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: msg, history: pulsarHistory })
-                });
-                const data = await res.json();
-                
-                let replyHtml = data.reply
-                    .replace(/!\\[(.*?)\\]\\((.*?)\\)/g, '<div class="chat-img-wrap"><img src="$2" alt="$1" class="chat-game-cover" loading="lazy" onerror="this.parentElement.style.display=\\'none\\';"><span class="chat-img-caption">$1</span></div>')
-                    .replace(/\\[(.*?)\\]\\((.*?)\\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-                    .replace(/### (.*?)\\n/g, '<h4 style="color:#fff;margin:6px 0;">$1</h4>')
-                    .replace(/\\*\\*(.*?)\\*\\*/g, '<strong>$1</strong>')
-                    .replace(/\\*(.*?)\\*/g, '<em>$1</em>')
-                    .replace(/\\n/g, '<br>');
+        self.send_response(404)
+        self.end_headers()
+        self.wfile.write(b"404 Not Found")
 
-                typingBubble.innerHTML = replyHtml;
-                pulsarHistory.push({ role: "user", content: msg });
-                pulsarHistory.push({ role: "assistant", content: data.reply });
-            } catch (err) {
-                typingBubble.innerHTML = 'Sorry, I ran into an issue retrieving that. Please try again in a moment!';
-            }
-            container.scrollTop = container.scrollHeight;
-        }
-    </script>
-</body>
-</html>
-"""
-
-def get_badge_class(tag):
-    tag_clean = (tag or "").upper()
-    if "INDUSTRY" in tag_clean: return "badge-industry"
-    if "TRAILER" in tag_clean: return "badge-trailer"
-    if "REVIEW" in tag_clean: return "badge-review"
-    if "UPDATE" in tag_clean or "PATCH" in tag_clean: return "badge-update"
-    if "RUMOR" in tag_clean: return "badge-rumor"
-    if "COMMUNITY" in tag_clean or "INDIE" in tag_clean: return "badge-community"
-    return "badge-news"
-
-def render_card(row):
-    takeaways = []
-    try:
-        if row["key_takeaways"]:
-            takeaways = json.loads(row["key_takeaways"])
-    except Exception:
-        pass
-
-    takeaways_html = ""
-    if takeaways:
-        items = "".join([f"<li>{t}</li>" for t in takeaways])
-        takeaways_html = f"""
-        <div class="highlights-card">
-            <div class="highlights-label">Key Highlights</div>
-            <ul>{items}</ul>
-        </div>
-        """
-
-    tag = row["tag"] or "NEWS"
-    title = row["ai_title"] or row["title"]
-    source = row["source_name"] or "Editorial"
-    source_url = row["source_url"] or "#"
-    published = row["published_at"] if row["published_at"] else (row["created_at"][:10] if row["created_at"] else "Recent")
-    badge_class = get_badge_class(tag)
-
-    image_html = ""
-    if row["image_url"]:
-        image_html = f"""
-        <a href="{source_url}" target="_blank" rel="noopener" class="banner-wrap">
-            <img src="{row['image_url']}" alt="{title}" class="banner-img" loading="lazy" onerror="this.parentElement.style.display='none';">
-        </a>
-        """
-
-    return f"""
-    <article class="editorial-card">
-        {image_html}
-        <div class="card-inner">
-            <div class="card-header-meta">
-                <div class="badge-group">
-                    <span class="cat-badge {badge_class}">{tag}</span>
-                </div>
-                <div class="byline-meta">
-                    <span>Source: <strong>{source}</strong></span> • <span>{published}</span> • <span>2 min read</span>
-                </div>
-            </div>
-            <h2 class="article-headline">
-                <a href="{source_url}" target="_blank" rel="noopener" class="headline-link">{title}</a>
-            </h2>
-            <div class="article-body">{row['summary']}</div>
-            {takeaways_html}
-            <div class="card-bottom-bar">
-                <span>By GamePulse Staff</span>
-                <a href="{source_url}" target="_blank" rel="noopener" class="read-original-link">
-                    Read Full Story on {source} &rarr;
-                </a>
-            </div>
-        </div>
-    </article>
-    """
-
-class WebHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path == "/api/chat":
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length).decode("utf-8")
+            content_len = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_len).decode("utf-8")
             try:
                 data = json.loads(body)
                 user_msg = data.get("message", "")
-                history = data.get("history", [])
                 
-                reply = chat_with_pulsar(user_msg, history)
+                reply = generate_pulsar_response(user_msg)
                 
                 self.send_response(200)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Type", "application/json")
+                self.send_cors_headers()
                 self.end_headers()
                 self.wfile.write(json.dumps({"reply": reply}).encode("utf-8"))
             except Exception as e:
                 self.send_response(500)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Type", "application/json")
+                self.send_cors_headers()
                 self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode("utf-8"))
             return
@@ -1586,154 +1158,613 @@ class WebHandler(BaseHTTPRequestHandler):
         self.send_response(404)
         self.end_headers()
 
-    def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path, params = parsed.path, urllib.parse.parse_qs(parsed.query)
+    def render_dashboard(self, active_tag, rows, search_kw):
+        tabs = [
+            ("ALL", "🌐 All News"),
+            ("REVIEW", "⭐ Reviews"),
+            ("TRAILER", "🎬 Trailers"),
+            ("UPDATE", "🛠️ Patches & DLC"),
+            ("INDUSTRY", "💼 Industry"),
+            ("RUMOR", "🕵️ Rumors"),
+            ("INDIE", "🕹️ Indie & Mods")
+        ]
 
-        if path == "/refresh":
-            threading.Thread(target=run_news_aggregation_pipeline, daemon=True).start()
-            self.send_response(302)
-            self.send_header("Location", "/")
-            self.end_headers()
-            return
+        nav_links = []
+        for t_key, t_label in tabs:
+            is_active = "active" if t_key == active_tag and not search_kw else ""
+            nav_links.append(f'<a href="/?tag={t_key}" class="tab-link {is_active}">{t_label}</a>')
+        tabs_html = "\n".join(nav_links)
 
-        if path == "/":
-            tag_filter = params.get("tag", [None])[0]
-            conn = get_db()
+        cards = []
+        for r in rows:
+            r_id, r_title, r_summary, r_url, r_source, r_tag, r_pub, r_score, r_img = r
+            tag_class = f"badge-{r_tag.lower()}"
+            img_html = f'<div class="card-img" style="background-image: url(\'{r_img}\');"></div>' if r_img else '<div class="card-img placeholder-img">🎮</div>'
+            score_badge = f'<span class="score-badge">★ {r_score}</span>' if r_score and r_score > 0 else ''
             
-            if tag_filter == "REVIEW":
-                cursor = conn.execute("""
-                    SELECT * FROM articles 
-                    WHERE tag='REVIEW' 
-                       OR category LIKE '%Review%' 
-                       OR title LIKE '%Review%' 
-                       OR title LIKE '%Verdict%' 
-                       OR title LIKE '%Score%' 
-                       OR title LIKE '%Impressions%'
-                       OR source_name LIKE '%Review%'
-                    ORDER BY id DESC LIMIT 50
-                """)
-            elif tag_filter == "INDUSTRY":
-                cursor = conn.execute("""
-                    SELECT * FROM articles 
-                    WHERE tag='INDUSTRY' 
-                       OR category LIKE '%Industry%' 
-                       OR source_name LIKE '%Industry%' 
-                       OR title LIKE '%Sales%' 
-                       OR title LIKE '%Layoff%' 
-                       OR title LIKE '%Studio%' 
-                       OR title LIKE '%Acquisition%'
-                       OR title LIKE '%Sony%'
-                       OR title LIKE '%Xbox%'
-                       OR title LIKE '%Nintendo%'
-                       OR title LIKE '%Financial%'
-                    ORDER BY id DESC LIMIT 50
-                """)
-            elif tag_filter == "TRAILER":
-                cursor = conn.execute("""
-                    SELECT * FROM articles 
-                    WHERE tag='TRAILER' 
-                       OR category LIKE '%Trailer%' 
-                       OR category LIKE '%Announcement%' 
-                       OR title LIKE '%Trailer%' 
-                       OR title LIKE '%Gameplay%' 
-                       OR title LIKE '%Reveal%' 
-                       OR title LIKE '%Announce%'
-                    ORDER BY id DESC LIMIT 50
-                """)
-            elif tag_filter == "UPDATE":
-                cursor = conn.execute("""
-                    SELECT * FROM articles 
-                    WHERE tag='UPDATE' 
-                       OR category LIKE '%Update%' 
-                       OR category LIKE '%Patch%'
-                       OR title LIKE '%Patch%' 
-                       OR title LIKE '%Update%' 
-                       OR title LIKE '%DLC%' 
-                       OR title LIKE '%Hotfix%' 
-                       OR title LIKE '%Season%' 
-                       OR title LIKE '%Roadmap%' 
-                       OR title LIKE '%Expansion%' 
-                       OR title LIKE '%Overhaul%'
-                       OR title LIKE '%Mod%'
-                       OR ai_title LIKE '%Patch%' 
-                       OR ai_title LIKE '%Update%' 
-                       OR ai_title LIKE '%DLC%' 
-                       OR ai_title LIKE '%Expansion%'
-                    ORDER BY id DESC LIMIT 50
-                """)
-            elif tag_filter == "RUMOR":
-                cursor = conn.execute("""
-                    SELECT * FROM articles 
-                    WHERE tag='RUMOR' 
-                       OR category LIKE '%Rumor%' 
-                       OR source_name LIKE '%GamingLeaks%' 
-                       OR title LIKE '%Rumor%' 
-                       OR title LIKE '%Leak%' 
-                       OR title LIKE '%Report:%' 
-                       OR title LIKE '%Insider%'
-                    ORDER BY id DESC LIMIT 50
-                """)
-            elif tag_filter == "COMMUNITY":
-                cursor = conn.execute("""
-                    SELECT * FROM articles 
-                    WHERE tag='COMMUNITY' 
-                       OR category LIKE '%Community%' 
-                       OR title LIKE '%Mod%' 
-                       OR title LIKE '%Indie%'
-                    ORDER BY id DESC LIMIT 50
-                """)
-            elif tag_filter:
-                cursor = conn.execute("SELECT * FROM articles WHERE tag LIKE ? ORDER BY id DESC LIMIT 50", (f"%{tag_filter}%",))
-            else:
-                cursor = conn.execute("SELECT * FROM articles ORDER BY id DESC LIMIT 50")
+            cards.append(f"""
+            <article class="article-card">
+                {img_html}
+                <div class="card-body">
+                    <div class="card-meta">
+                        <span class="badge {tag_class}">{r_tag}</span>
+                        <span class="source">{html.escape(r_source)}</span>
+                        {score_badge}
+                    </div>
+                    <h2 class="card-title"><a href="{r_url}" target="_blank" rel="noopener">{html.escape(r_title)}</a></h2>
+                    <p class="card-summary">{html.escape(r_summary)}</p>
+                    <div class="card-footer">
+                        <span class="time">{r_pub[:16] if len(r_pub) >= 16 else r_pub}</span>
+                        <a href="{r_url}" target="_blank" rel="noopener" class="read-btn">Read Story →</a>
+                    </div>
+                </div>
+            </article>
+            """)
 
-            rows = cursor.fetchall()
-            conn.close()
+        cards_html = "\n".join(cards) if cards else '<div class="no-stories"><p>No stories found matching your filter. Check another section or search term!</p></div>'
 
-            articles_html = "\n".join([render_card(r) for r in rows]) if rows else """
-            <div style="text-align:center; padding: 80px 20px; color: #64748b;">
-                <h3>No stories in this section yet.</h3>
-                <p>Check back shortly as new live feeds are indexed.</p>
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GamePulse AI | Live Gaming Intelligence & Pulsar Concierge</title>
+    <style>
+        :root {{
+            --bg-main: #0b0e14;
+            --bg-card: #151b26;
+            --bg-card-hover: #1c2433;
+            --accent-cyan: #00f2fe;
+            --accent-purple: #9d4edd;
+            --accent-green: #00e676;
+            --accent-gold: #ffd166;
+            --accent-red: #ff3366;
+            --text-main: #f0f4f8;
+            --text-muted: #8b9bb4;
+            --border-col: #222e42;
+        }}
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            background: var(--bg-main);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }}
+        header {{
+            background: rgba(15, 22, 34, 0.95);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-col);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            padding: 0.8rem 1.5rem;
+        }}
+        .header-wrap {{
+            max-width: 1300px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+        }}
+        .logo-box {{
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            text-decoration: none;
+            color: #fff;
+        }}
+        .logo-icon {{
+            font-size: 1.6rem;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }}
+        .logo-text {{
+            font-size: 1.3rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }}
+        .logo-tag {{
+            font-size: 0.65rem;
+            background: var(--border-col);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: var(--accent-cyan);
+            font-weight: 700;
+            text-transform: uppercase;
+        }}
+        .search-box form {{
+            display: flex;
+            align-items: center;
+            background: #0f1724;
+            border: 1px solid var(--border-col);
+            border-radius: 20px;
+            padding: 4px 12px;
+        }}
+        .search-box input {{
+            background: transparent;
+            border: none;
+            outline: none;
+            color: #fff;
+            font-size: 0.85rem;
+            padding: 4px;
+            width: 180px;
+        }}
+        .chat-btn {{
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            color: #fff;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            font-weight: 700;
+            font-size: 0.85rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 4px 15px rgba(0, 242, 254, 0.25);
+            transition: all 0.2s ease;
+        }}
+        .chat-btn:hover {{
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(0, 242, 254, 0.4);
+        }}
+        .tab-bar {{
+            background: #0e141f;
+            border-bottom: 1px solid var(--border-col);
+            padding: 0.5rem 1.5rem;
+            overflow-x: auto;
+            white-space: nowrap;
+        }}
+        .tab-wrap {{
+            max-width: 1300px;
+            margin: 0 auto;
+            display: flex;
+            gap: 0.5rem;
+        }}
+        .tab-link {{
+            color: var(--text-muted);
+            text-decoration: none;
+            padding: 0.45rem 0.9rem;
+            border-radius: 16px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            transition: all 0.15s ease;
+        }}
+        .tab-link:hover {{
+            color: #fff;
+            background: rgba(255, 255, 255, 0.05);
+        }}
+        .tab-link.active {{
+            background: linear-gradient(135deg, rgba(0, 242, 254, 0.15), rgba(157, 78, 221, 0.15));
+            color: var(--accent-cyan);
+            border: 1px solid rgba(0, 242, 254, 0.3);
+        }}
+        main {{
+            max-width: 1300px;
+            margin: 1.5rem auto;
+            padding: 0 1.5rem;
+            flex: 1;
+            width: 100%;
+        }}
+        .grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 1.5rem;
+        }}
+        .article-card {{
+            background: var(--bg-card);
+            border: 1px solid var(--border-col);
+            border-radius: 12px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }}
+        .article-card:hover {{
+            transform: translateY(-3px);
+            border-color: rgba(0, 242, 254, 0.4);
+            background: var(--bg-card-hover);
+        }}
+        .card-img {{
+            height: 180px;
+            background-size: cover;
+            background-position: center;
+            background-color: #1a2230;
+        }}
+        .placeholder-img {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 3rem;
+            color: var(--text-muted);
+        }}
+        .card-body {{
+            padding: 1.1rem;
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+        }}
+        .card-meta {{
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            margin-bottom: 0.6rem;
+            font-size: 0.75rem;
+        }}
+        .badge {{
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }}
+        .badge-all {{ background: #263852; color: #a5c7f7; }}
+        .badge-review {{ background: rgba(255, 209, 102, 0.15); color: var(--accent-gold); }}
+        .badge-trailer {{ background: rgba(157, 78, 221, 0.15); color: #c77dff; }}
+        .badge-update {{ background: rgba(0, 230, 118, 0.15); color: var(--accent-green); }}
+        .badge-industry {{ background: rgba(0, 242, 254, 0.15); color: var(--accent-cyan); }}
+        .badge-rumor {{ background: rgba(255, 51, 102, 0.15); color: var(--accent-red); }}
+        .badge-indie {{ background: rgba(255, 140, 0, 0.15); color: #ffa94d; }}
+        .source {{ color: var(--text-muted); font-weight: 500; }}
+        .score-badge {{
+            margin-left: auto;
+            color: var(--accent-gold);
+            font-weight: 700;
+        }}
+        .card-title {{
+            font-size: 1.05rem;
+            line-height: 1.35;
+            margin-bottom: 0.6rem;
+            font-weight: 700;
+        }}
+        .card-title a {{
+            color: #fff;
+            text-decoration: none;
+        }}
+        .card-title a:hover {{
+            color: var(--accent-cyan);
+        }}
+        .card-summary {{
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            line-height: 1.45;
+            margin-bottom: 1rem;
+            flex: 1;
+        }}
+        .card-footer {{
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            border-top: 1px solid var(--border-col);
+            padding-top: 0.8rem;
+        }}
+        .time {{ color: var(--text-muted); }}
+        .read-btn {{
+            color: var(--accent-cyan);
+            text-decoration: none;
+            font-weight: 600;
+        }}
+        .read-btn:hover {{ text-decoration: underline; }}
+        .no-stories {{
+            text-align: center;
+            padding: 4rem 1rem;
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            grid-column: 1 / -1;
+        }}
+
+        /* MODAL / CHAT DRAWER */
+        .chat-drawer {{
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 440px;
+            max-width: calc(100vw - 40px);
+            height: 600px;
+            max-height: calc(100vh - 60px);
+            background: #111722;
+            border: 1px solid var(--border-col);
+            border-radius: 16px;
+            display: none;
+            flex-direction: column;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            overflow: hidden;
+        }}
+        .chat-header {{
+            background: #161e2e;
+            padding: 0.9rem 1.2rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border-col);
+        }}
+        .chat-title {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 700;
+            color: #fff;
+            font-size: 0.95rem;
+        }}
+        .chat-close {{
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 1.3rem;
+            cursor: pointer;
+            padding: 0 4px;
+        }}
+        .chat-close:hover {{ color: #fff; }}
+        .chat-chips {{
+            padding: 0.6rem 0.8rem;
+            display: flex;
+            gap: 0.4rem;
+            overflow-x: auto;
+            white-space: nowrap;
+            background: #0f1623;
+            border-bottom: 1px solid var(--border-col);
+        }}
+        .chip {{
+            background: #1b2434;
+            border: 1px solid var(--border-col);
+            color: #d1d9e6;
+            font-size: 0.75rem;
+            padding: 4px 10px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.15s;
+        }}
+        .chip:hover {{
+            background: var(--accent-cyan);
+            color: #0b0e14;
+            font-weight: 600;
+        }}
+        .chat-messages {{
+            flex: 1;
+            padding: 1rem;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+        }}
+        .msg {{
+            padding: 0.75rem 1rem;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            line-height: 1.45;
+            max-width: 90%;
+            word-break: break-word;
+        }}
+        .msg-user {{
+            background: linear-gradient(135deg, #1f4068, #162447);
+            color: #fff;
+            align-self: flex-end;
+            border-bottom-right-radius: 2px;
+        }}
+        .msg-pulsar {{
+            background: #182233;
+            color: #e2e8f0;
+            align-self: flex-start;
+            border-bottom-left-radius: 2px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }}
+        .msg-pulsar p {{ margin-bottom: 0.5rem; }}
+        .msg-pulsar p:last-child {{ margin-bottom: 0; }}
+        .msg-pulsar strong {{ color: var(--accent-cyan); }}
+        .chat-input-bar {{
+            padding: 0.8rem;
+            background: #161e2e;
+            border-top: 1px solid var(--border-col);
+            display: flex;
+            gap: 0.5rem;
+        }}
+        .chat-input-bar input {{
+            flex: 1;
+            background: #0f1623;
+            border: 1px solid var(--border-col);
+            border-radius: 20px;
+            padding: 0.6rem 1rem;
+            color: #fff;
+            font-size: 0.85rem;
+            outline: none;
+        }}
+        .chat-input-bar input:focus {{
+            border-color: var(--accent-cyan);
+        }}
+        .chat-send {{
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            color: #fff;
+            border: none;
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        footer {{
+            border-top: 1px solid var(--border-col);
+            padding: 1.5rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.8rem;
+        }}
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-wrap">
+            <a href="/" class="logo-box">
+                <span class="logo-icon">🎮</span>
+                <span class="logo-text">GamePulse AI</span>
+                <span class="logo-tag">LIVE</span>
+            </a>
+            <div class="search-box">
+                <form action="/" method="GET">
+                    <input type="text" name="q" placeholder="Search news or games..." value="{html.escape(search_kw)}">
+                </form>
             </div>
-            """
+            <button class="chat-btn" onclick="toggleChat()">
+                <span>⚡</span>
+                <span>Ask Pulsar AI</span>
+            </button>
+        </div>
+    </header>
 
-            today_date_str = datetime.now().strftime("%A, %B %d, %Y")
+    <div class="tab-bar">
+        <div class="tab-wrap">
+            {tabs_html}
+        </div>
+    </div>
 
-            html = HTML_TEMPLATE.replace("{{ARTICLES_LIST}}", articles_html)
-            html = html.replace("{{TODAY_DATE}}", today_date_str)
-            html = html.replace("{{GITHUB_REPO_URL}}", GITHUB_REPO_URL)
-            html = html.replace("{{ACT_ALL}}", "active" if not tag_filter else "")
-            html = html.replace("{{ACT_IND}}", "active" if tag_filter == "INDUSTRY" else "")
-            html = html.replace("{{ACT_TRAILER}}", "active" if tag_filter == "TRAILER" else "")
-            html = html.replace("{{ACT_REV}}", "active" if tag_filter == "REVIEW" else "")
-            html = html.replace("{{ACT_UPD}}", "active" if tag_filter == "UPDATE" else "")
-            html = html.replace("{{ACT_RUMOR}}", "active" if tag_filter == "RUMOR" else "")
-            html = html.replace("{{ACT_COMM}}", "active" if tag_filter == "COMMUNITY" else "")
+    <main>
+        <div class="grid">
+            {cards_html}
+        </div>
+    </main>
 
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(html.encode("utf-8"))
-            return
+    <!-- PULSAR AI CONCIERGE DRAWER -->
+    <div class="chat-drawer" id="chatDrawer">
+        <div class="chat-header">
+            <div class="chat-title">
+                <span>🤖</span>
+                <span>Pulsar Concierge (All 32 Genres)</span>
+            </div>
+            <button class="chat-close" onclick="toggleChat()">✕</button>
+        </div>
+        <div class="chat-chips">
+            <button class="chip" onclick="askChip('diablo like games')">⚔️ Diablo & ARPG</button>
+            <button class="chip" onclick="askChip('Games like Gears of War')">🛡️ Gears of War</button>
+            <button class="chip" onclick="askChip('Games like Spider-Man 2')">🕸️ Spider-Man</button>
+            <button class="chip" onclick="askChip('Games like Star Wars Jedi Survivor')">🗡️ Star Wars Jedi</button>
+            <button class="chip" onclick="askChip('Games like Call of Duty')">🎯 Call of Duty</button>
+            <button class="chip" onclick="askChip('Doom boomer shooters')">💥 Doom Shooters</button>
+            <button class="chip" onclick="askChip('Fire Emblem tactical RPGs')">♟️ Fire Emblem</button>
+            <button class="chip" onclick="askChip('Persona and JRPGs')">✨ Persona & JRPGs</button>
+            <button class="chip" onclick="askChip('Baldurs Gate CRPGs')">🎲 Baldur's Gate</button>
+            <button class="chip" onclick="askChip('Silent Hill survival horror')">🔦 Silent Hill</button>
+            <button class="chip" onclick="askChip('Hitman stealth games')">🕶️ Hitman Stealth</button>
+            <button class="chip" onclick="askChip('Cozy farming games like Stardew')">🌾 Stardew & Cozy</button>
+            <button class="chip" onclick="askChip('Civilization strategy games')">👑 Civ 7 & 4X</button>
+            <button class="chip" onclick="askChip('Gran Turismo racing games')">🏎️ Racing & Forza</button>
+            <button class="chip" onclick="askChip('Street Fighter and Tekken fighting')">🥋 Fighting Games</button>
+            <button class="chip" onclick="askChip('show me 2026 games rated 80+ or more')">🏆 2026 Games 80+</button>
+        </div>
+        <div class="chat-messages" id="chatMsgs">
+            <div class="msg msg-pulsar">
+                <p><strong>Hi! I'm Pulsar, your GamePulse AI Concierge.</strong></p>
+                <p>I cover all 32 gaming genres and thousands of game archetypes (from <em>Diablo</em> and <em>Gears of War</em> to <em>Spider-Man 2</em>, <em>Star Wars Jedi</em>, <em>Fire Emblem</em>, <em>Silent Hill</em>, cozy sims, boomer shooters, and more).</p>
+                <p>Ask for any genre, game recommendation, platform (PC, PS5, Xbox, Switch), or rating filter!</p>
+            </div>
+        </div>
+        <div class="chat-input-bar">
+            <input type="text" id="chatInput" placeholder="Ask about any genre or game..." onkeydown="if(event.key==='Enter') sendChat()">
+            <button class="chat-send" onclick="sendChat()">➔</button>
+        </div>
+    </div>
 
-        self.send_response(404)
-        self.end_headers()
+    <footer>
+        <p>GamePulse AI &copy; 2026 &bull; Real-time Gaming Intelligence & Concierge &bull; Clean Python Architecture</p>
+    </footer>
 
-    def log_message(self, format, *args):
-        return
+    <script>
+        function toggleChat() {{
+            const d = document.getElementById('chatDrawer');
+            if (d.style.display === 'flex') {{
+                d.style.display = 'none';
+            }} else {{
+                d.style.display = 'flex';
+                document.getElementById('chatInput').focus();
+            }}
+        }}
 
+        function askChip(text) {{
+            document.getElementById('chatInput').value = text;
+            sendChat();
+        }}
+
+        function sendChat() {{
+            const inp = document.getElementById('chatInput');
+            const msg = inp.value.trim();
+            if (!msg) return;
+
+            const box = document.getElementById('chatMsgs');
+            
+            const uDiv = document.createElement('div');
+            uDiv.className = 'msg msg-user';
+            uDiv.textContent = msg;
+            box.appendChild(uDiv);
+            inp.value = '';
+            box.scrollTop = box.scrollHeight;
+
+            const loadDiv = document.createElement('div');
+            loadDiv.className = 'msg msg-pulsar';
+            loadDiv.id = 'loadingMsg';
+            loadDiv.innerHTML = '<em>Pulsar is analyzing games...</em>';
+            box.appendChild(loadDiv);
+            box.scrollTop = box.scrollHeight;
+
+            fetch('/api/chat', {{
+                method: 'POST',
+                headers: {{ 'Content-Type': 'application/json' }},
+                body: JSON.stringify({{ message: msg }})
+            }})
+            .then(res => res.json())
+            .then(data => {{
+                loadDiv.remove();
+                const pDiv = document.createElement('div');
+                pDiv.className = 'msg msg-pulsar';
+                
+                let formatted = data.reply
+                    .replace(/\\*\\*(.*?)\\*\\*/g, '<strong>$1</strong>')
+                    .replace(/\\*(.*?)\\*/g, '<em>$1</em>')
+                    .replace(/\\n/g, '<br>');
+                pDiv.innerHTML = formatted;
+                box.appendChild(pDiv);
+                box.scrollTop = box.scrollHeight;
+            }})
+            .catch(err => {{
+                loadDiv.remove();
+                const eDiv = document.createElement('div');
+                eDiv.className = 'msg msg-pulsar';
+                eDiv.innerHTML = '<span style="color:var(--accent-red)">Error contacting Pulsar. Please retry!</span>';
+                box.appendChild(eDiv);
+            }});
+        }}
+    </script>
+</body>
+</html>
+"""
+
+# ---------------------------------------------------------------------------
+# MAIN ENTRY POINT
+# ---------------------------------------------------------------------------
 def main():
+    print("=" * 60)
+    print("GamePulse AI starting up...")
+    print(f"Loaded {len(ALL_ARCHETYPES)} all-encompassing genres & game archetypes.")
     init_db()
-    scheduler_thread = threading.Thread(target=scheduler_worker, daemon=True)
-    scheduler_thread.start()
+    print("Database initialized with cold-start multi-category dataset.")
 
-    server = HTTPServer(("0.0.0.0", PORT), WebHandler)
-    print(f"[*] GamePulse Server active on port {PORT}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        server.server_close()
+    agg_thread = threading.Thread(target=scheduler_worker, daemon=True)
+    agg_thread.start()
+    print("Live RSS aggregator worker started.")
+
+    server_address = ("0.0.0.0", PORT)
+    with socketserver.ThreadingTCPServer(server_address, GamePulseHandler) as httpd:
+        print(f"GamePulse AI server listening on port {PORT}...")
+        try:
+            httpd.serve_forever()
+        except KeyboardInterrupt:
+            print("\nShutting down server.")
+            httpd.shutdown()
 
 if __name__ == "__main__":
     main()
