@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 GamePulse - Video Game News, Reviews & Editorial Digest
-Omni-Category Live Ingestion • Round-Robin Feed Balance • 20-Genre Pulsar AI
+Omni-Category Live Ingestion • Multi-Turn Memory • 20-Genre Pulsar AI
 Zero External Dependencies (Pure Python Standard Library)
 """
 
@@ -41,9 +41,6 @@ REFRESH_INTERVAL_MINUTES = int(os.environ.get("REFRESH_MINUTES", 15))
 MAX_ARTICLE_AGE_DAYS = 30  # Allow up to 30 days of active coverage
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip().strip("'\"")
-if not GROQ_API_KEY:
-    GROQ_API_KEY = "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"
-
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip().strip("'\"")
 GITHUB_REPO_URL = os.environ.get("GITHUB_URL", "https://github.com/Suraj10123/gamepulse-ai")
 
@@ -78,7 +75,7 @@ DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 # Curated High-Signal Seed Articles Across All Categories
 SEED_ARTICLES = [
-    # --- REVIEWS & SCORES ---
+    # REVIEWS & SCORES
     {
         "title": "Astro Bot Review - A Joyous 3D Platforming Masterpiece on PS5",
         "ai_title": "Astro Bot Review: The Benchmark for Modern 3D Platformers",
@@ -122,7 +119,7 @@ SEED_ARTICLES = [
         "published_at": "Recent", "sentiment": "Positive"
     },
 
-    # --- INDUSTRY & STUDIOS ---
+    # INDUSTRY & STUDIOS
     {
         "title": "Sony Announces PlayStation 5 Pro with Enhanced GPU, PSSR Upscaling and 2TB SSD",
         "ai_title": "Sony Unveils PS5 Pro: Technical Architecture and 60FPS Fidelity Vision",
@@ -137,22 +134,8 @@ SEED_ARTICLES = [
         "image_url": "https://images.unsplash.com/photo-1606813907291-d86efa9b94db?auto=format&fit=crop&w=1000&q=80",
         "published_at": "Recent", "sentiment": "Neutral"
     },
-    {
-        "title": "Nintendo Outlines Timeline for Official Nintendo Switch Successor Announcement",
-        "ai_title": "Nintendo Hardware Roadmap: Switch Successor Announcement Confirmed",
-        "summary": "Nintendo President Shuntaro Furukawa confirmed that the official announcement of the Nintendo Switch successor console will take place during the current fiscal year, while maintaining full backward compatibility support.",
-        "key_takeaways": json.dumps([
-            "Official announcement of Switch successor confirmed for current fiscal year.",
-            "Nintendo Account architecture to carry forward seamless digital libraries.",
-            "Hardware production preparing to meet worldwide launch demand."
-        ]),
-        "category": "Industry", "tag": "INDUSTRY", "source_name": "GamesIndustry.biz",
-        "source_url": "https://www.gamesindustry.biz/nintendo-switch-successor-announcement",
-        "image_url": "https://images.unsplash.com/photo-1578301978693-85fa9c0320b9?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Positive"
-    },
 
-    # --- TRAILERS & REVEALS ---
+    # TRAILERS & REVEALS
     {
         "title": "Ghost of Yotei Revealed - Sucker Punch Showcases Feudal Japan Successor",
         "ai_title": "Ghost of Yotei: New Protagonist Atsu and Hokkaido Setting Detailed",
@@ -167,22 +150,8 @@ SEED_ARTICLES = [
         "image_url": "https://images.unsplash.com/photo-1579783900882-c0d3dad7b119?auto=format&fit=crop&w=1000&q=80",
         "published_at": "Recent", "sentiment": "Positive"
     },
-    {
-        "title": "Doom: The Dark Ages Trailer Showcases Shield Saw, Mechs, and Dark Fantasy Warfare",
-        "ai_title": "Doom: The Dark Ages: Medieval Prequel Mechanics and Shield Saw Weapons",
-        "summary": "id Software and Bethesda revealed Doom: The Dark Ages, a dark fantasy prequel recounting the Doom Slayer's origin as the superweapon of gods and kings. Features heavy kinetic combat, a throwable Shield Saw, and colossal mech battles.",
-        "key_takeaways": json.dumps([
-            "Heavier, grounded combat pacing prioritizing close-quarters brutality.",
-            "Serrated Shield Saw can parry attacks, block projectiles, and decapitate demons.",
-            "Piloted Atlan mech combat sequences against titanic demon hordes."
-        ]),
-        "category": "Announcements", "tag": "TRAILER", "source_name": "Gematsu",
-        "source_url": "https://www.gematsu.com/2024/06/doom-the-dark-ages-announced",
-        "image_url": "https://images.unsplash.com/photo-1542751371-adc38448a05e?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Positive"
-    },
 
-    # --- PATCHES, EXPANSIONS & DLC ---
+    # PATCHES, EXPANSIONS & DLC
     {
         "title": "Baldur's Gate 3 Patch 7 Launches with Official Mod Manager and 13 Evil Endings",
         "ai_title": "Baldur's Gate 3: Patch 7 Modding Toolkit & Cinematic Endings Breakdown",
@@ -211,22 +180,8 @@ SEED_ARTICLES = [
         "image_url": "https://images.unsplash.com/photo-1538481199705-c710c4e965fc?auto=format&fit=crop&w=1000&q=80",
         "published_at": "Recent", "sentiment": "Positive"
     },
-    {
-        "title": "Elden Ring: Shadow of the Erdtree Patch 1.14 Calibration Notes & Boss Rebalances",
-        "ai_title": "Elden Ring: Shadow of the Erdtree Patch 1.14 Balance Calibration",
-        "summary": "FromSoftware has released patch 1.14 for Elden Ring, recalibrating final boss attack patterns in Shadow of the Erdtree. Weapon arts and incantations received damage adjustments, and camera tracking stability was improved.",
-        "key_takeaways": json.dumps([
-            "Radahn encounter attack patterns and holy particle visibility rebalanced.",
-            "Buffed poise damage for colossal weapons, greatswords, and light greatsword combos.",
-            "Addressed camera tracking collisions against towering field bosses."
-        ]),
-        "category": "Updates & DLC", "tag": "UPDATE", "source_name": "Rock Paper Shotgun",
-        "source_url": "https://en.bandainamcoent.eu/elden-ring/news/elden-ring-patch-notes-version-114",
-        "image_url": "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Positive"
-    },
 
-    # --- RUMORS & SCOOPS ---
+    # RUMORS & SCOOPS
     {
         "title": "Insider Report: FromSoftware Developing Unannounced Dark Fantasy IP with Sony",
         "ai_title": "FromSoftware Rumor: New Dark Fantasy Action RPG in Production",
@@ -241,22 +196,8 @@ SEED_ARTICLES = [
         "image_url": "https://images.unsplash.com/photo-1511512578047-dfb367046420?auto=format&fit=crop&w=1000&q=80",
         "published_at": "Recent", "sentiment": "Neutral"
     },
-    {
-        "title": "Datamine Leak: Resident Evil 9 Protagonist Details & Open-Island Setting",
-        "ai_title": "Resident Evil 9 Leak: Open-Island Exploration and Legacy Characters",
-        "summary": "Dataminers have uncovered production references to the upcoming mainline Resident Evil installment. The leak points toward a mysterious Southeast Asian island setting, dual protagonists, and evolved RE Engine lighting.",
-        "key_takeaways": json.dumps([
-            "Island setting with semi-open environment hubs and psychological hallucinations.",
-            "Legacy characters returning in cooperative narrative viewpoints.",
-            "Built upon the latest iteration of Capcom's proprietary RE Engine."
-        ]),
-        "category": "Rumors", "tag": "RUMOR", "source_name": "VGC",
-        "source_url": "https://www.videogameschronicle.com/resident-evil-9-rumors",
-        "image_url": "https://images.unsplash.com/photo-1509198397868-475647b2a1e5?auto=format&fit=crop&w=1000&q=80",
-        "published_at": "Recent", "sentiment": "Neutral"
-    },
 
-    # --- COMMUNITY & INDIE ---
+    # COMMUNITY & INDIE
     {
         "title": "Fallout: London Massive Total Conversion Mod Surpasses 1 Million Downloads",
         "ai_title": "Community Milestone: Fallout London Achieves Historic Modding Success",
@@ -314,14 +255,6 @@ def init_db():
             )
         """)
         
-        # Purge legacy mock rows
-        conn.execute("""
-            DELETE FROM articles WHERE 
-            source_url LIKE '%ign.com/articles/astro-bot-legacy%' OR 
-            source_url LIKE '%gamesindustry.biz/console-market-legacy%'
-        """)
-
-        # Ensure every category has stories on cold start
         now_iso = datetime.now(timezone.utc).isoformat()
         today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         
@@ -760,17 +693,119 @@ LIVE NEWSROOM CONTEXT:
     if ai_reply:
         return ai_reply
 
-    # Fallback to encyclopedic response
-    if any(w in msg_lower for w in ["silent hill", "silenthill", "slient hill", "horror", "resident evil", "dead space", "alan wake"]):
+    # ==========================================
+    # MULTI-TURN CONTEXT RESOLUTION
+    # ==========================================
+    # Handles follow-ups like "PC", "PS5", "Xbox", "Switch"
+    platforms = ["pc", "ps5", "ps4", "xbox", "switch", "playstation", "nintendo"]
+    if msg_lower in platforms and history:
+        prior_context = " ".join([h.get("content", "").lower() for h in history])
+        target_platform = msg_clean.upper()
+
+        if any(w in prior_context for w in ["diablo", "arpg", "path of exile", "poe", "loot", "blizzard"]):
+            if "pc" in msg_lower:
+                return (
+                    "### ⚔️ **Best Action RPGs Like Diablo on PC**\n\n"
+                    "1. **Path of Exile 2** *(PC — Beta Access)*\n"
+                    "- **Why You'll Love It**: The undisputed gold standard for PC ARPGs with deep skill-gem linkages, WASD or click movement, and extensive endgame mapping.\n\n"
+                    "2. **Last Epoch** *(PC — OpenCritic 80)*\n"
+                    "- **Why You'll Love It**: Hits the sweet spot between Diablo IV's polish and PoE's depth with dedicated offline mode and creative time-travel masteries.\n\n"
+                    "3. **Diablo II: Resurrected** *(PC — OpenCritic 83)*\n"
+                    "- **Why You'll Love It**: Classic dark gothic atmosphere with legacy keyboard hotkeys and modern ultrawide monitor support.\n\n"
+                    "4. **Grim Dawn** *(PC — Metacritic 83)*\n"
+                    "- **Why You'll Love It**: Dual-class combinations and massive offline loot progression."
+                )
+            else:
+                return (
+                    f"### ⚔️ **Best Action RPGs Like Diablo on {target_platform}**\n\n"
+                    "1. **Diablo IV: Vessel of Hatred** *(PS5, Xbox — OpenCritic 85)*\n"
+                    "- **Why You'll Love It**: Responsive controller vibrations, the martial arts Spiritborn class, and couch co-op support.\n\n"
+                    "2. **Diablo II: Resurrected** *(PS5, Xbox, Switch — OpenCritic 83)*\n"
+                    "- **Why You'll Love It**: Tailored controller navigation, inventory shortcuts, and 60FPS console performance.\n\n"
+                    "3. **Path of Exile 2** *(PS5, Xbox Series X|S — Beta Access)*\n"
+                    "- **Why You'll Love It**: Twin-stick console combat controls with couch co-op support on the big screen.\n\n"
+                    "4. **Titan Quest / Torchlight II**\n"
+                    "- **Why You'll Love It**: Accessible mythology and steampunk dungeon crawling on consoles."
+                )
+
+        if any(w in prior_context for w in ["silent hill", "horror", "resident evil", "dead space"]):
+            return (
+                f"### 🔦 **Top Psychological Horror Games on {target_platform}**\n\n"
+                f"1. **Silent Hill 2 Remake** *({'PS5 Exclusive on Console' if 'ps5' in msg_lower else 'PC, PS5'}) — OpenCritic 86*\n"
+                "- Fog-choked psychological descent into guilt with tactile modern third-person combat.\n\n"
+                "2. **Alan Wake 2** *(OpenCritic 89)*\n"
+                "- Shifting dimensions in The Dark Place, detective mind palace investigations, and surreal live-action integration.\n\n"
+                "3. **Resident Evil 4 Remake** *(OpenCritic 92)*\n"
+                "- Masterpiece of survival tension, roundhouse parries, and resource management."
+            )
+
+        if any(w in prior_context for w in ["cod", "call of duty", "shooter", "activision", "fps"]):
+            return (
+                f"### 🎯 **Top Fast-Paced Shooters on {target_platform}**\n\n"
+                "1. **Call of Duty: Black Ops 6** *(OpenCritic 84)*\n"
+                "- 360-degree omnimovement allowing running, sliding, and diving in any direction.\n\n"
+                "2. **Titanfall 2** *(Metacritic 89)*\n"
+                "- Peak wall-running momentum, crisp weapon recoil, and mechanized Titan warfare.\n\n"
+                "3. **Doom Eternal** *(OpenCritic 89)*\n"
+                "- High-intensity demon slaying with shoulder flame cannons and meat-hook traversal."
+            )
+
+    # ==========================================
+    # 20-GENRE SPELLING-TOLERANT ENGINE
+    # ==========================================
+    # 1. Diablo & Action RPGs
+    if any(w in msg_lower for w in ["diablo", "diaablo", "arpg", "path of exile", "poe", "last epoch", "grim dawn", "loot"]):
         return (
-            "### 🔦 **Top Psychological & Survival Horror Games Like Silent Hill**\n\n"
-            "1. **Silent Hill 2 Remake** *(PS5, PC — OpenCritic 86)* — Atmospheric Unreal Engine 5 reconstruction.\n"
-            "2. **Alan Wake 2** *(PC, PS5, Xbox — OpenCritic 89)* — Shifting realities and psychological survival horror.\n"
-            "3. **Signalis** *(PC, Switch, PlayStation, Xbox — OpenCritic 82)* — Classic retro survival horror perfection.\n"
-            "4. **Resident Evil 4 Remake** *(PC, PS5, Xbox — OpenCritic 92)* — Unmatched tension and resource management."
+            "### ⚔️ **Top Action RPGs and Isometric Dungeon Crawlers Like Diablo**\n\n"
+            "If you love slaughtering demon hordes, theorycrafting deep skill trees, and hunting for legendary loot showers like in *Diablo*, here are the best games to play:\n\n"
+            "1. **Path of Exile 2** *(PC, PS5, Xbox Series X|S — Beta Access)*\n"
+            "- **Why You'll Love It**: The deepest skill-gem customization tree in ARPG history, dark 6-act campaign, and responsive dodge-roll combat.\n\n"
+            "2. **Last Epoch** *(PC — OpenCritic 80)*\n"
+            "- **Why You'll Love It**: Features dedicated offline play, an innovative in-game loot filter builder, and time-travel crafting across historical eras.\n\n"
+            "3. **Diablo II: Resurrected** *(PC, PS5, Xbox, Switch — OpenCritic 83)*\n"
+            "- **Why You'll Love It**: The gold standard of dark fantasy ARPGs with iconic runewords, potion management, and classic dark atmosphere.\n\n"
+            "4. **Grim Dawn** *(PC, Xbox — Metacritic 83)*\n"
+            "- **Why You'll Love It**: Allows you to combine any two classes into hybrid masteries with constellation passives and deep mod support.\n\n"
+            "Are you looking to play on **PC, PS5, Xbox, or Switch**?"
         )
 
-    if any(w in msg_lower for w in ["zelda", "breath of the wild", "tears of the kingdom", "open world"]):
+    # 2. Horror & Silent Hill
+    if any(w in msg_lower for w in ["silent hill", "silenthill", "slient hill", "horror", "horor", "scary", "resident evil", "reident evil", "dead space", "alan wake", "signalis", "soma"]):
+        return (
+            "### 🔦 **Top Psychological & Survival Horror Games Like Silent Hill**\n\n"
+            "1. **Silent Hill 2 Remake** *(PlayStation 5, PC — OpenCritic 86 / Metacritic 86)*\n"
+            "- Faithful Unreal Engine 5 reconstruction of James Sunderland's nightmare in Silent Hill, with modernized combat and suffocating fog.\n\n"
+            "2. **Alan Wake 2** *(PC, PS5, Xbox Series X|S — OpenCritic 89)*\n"
+            "- Shifting psychological dimensions (The Dark Place), ritualistic murder mysteries, and live-action surrealism.\n\n"
+            "3. **Signalis** *(PC, Switch, PlayStation, Xbox — OpenCritic 82)*\n"
+            "- Classic retro survival horror with cryptic puzzle boxes, limited inventory management, and cosmic dread.\n\n"
+            "4. **Resident Evil 4 Remake** *(PC, PS5, Xbox — OpenCritic 92)*\n"
+            "- Unmatched tension, resource conservation, audio cues, and terrifying encounters."
+        )
+
+    # 3. Call of Duty & Activision Shooters
+    if any(w in msg_lower for w in ["cod", "call of duty", "activision", "fps", "shooter", "shooting", "black ops", "modern warfare", "titanfall", "doom"]):
+        return (
+            "### 🎯 **Top Fast-Paced & Military Shooters Like Call of Duty (by Activision)**\n\n"
+            "1. **Call of Duty: Black Ops 6** *(PC, PS5, Xbox Series X|S — OpenCritic 84)*\n"
+            "- Omnimovement allows sprinting, sliding, and diving in 360 degrees with signature arcade gunplay.\n\n"
+            "2. **Titanfall 2** *(PC, PS4, Xbox — Metacritic 89)*\n"
+            "- Created by the original *Modern Warfare* developers, featuring wall-running mobility, crisp weapon recoil, and giant mech combat.\n\n"
+            "3. **The Finals / Apex Legends** *(Free to Play)*\n"
+            "- High-mobility squad shooting with environmental destruction and tactical abilities."
+        )
+
+    # 4. Cinematic Action (Uncharted / Tomb Raider)
+    if any(w in msg_lower for w in ["uncharted", "unchearted", "tomb raider", "naughty dog", "last of us", "indiana jones"]):
+        return (
+            "### 🌿 **Top Cinematic Action-Adventure Games Like Uncharted**\n\n"
+            "1. **Tomb Raider Reboot Trilogy** *(Metacritic 86–89)* — Ancient tomb puzzles, climbing traversal, and shootouts.\n"
+            "2. **The Last of Us Part I & Part II** *(Metacritic 93 / OpenCritic 90)* — Motion capture benchmark and visceral combat.\n"
+            "3. **Indiana Jones and the Great Circle / Star Wars Jedi: Survivor** *(OpenCritic 85)* — Globe-trotting exploration and whip/lightsaber traversal."
+        )
+
+    # 5. Open-World Discovery (Zelda, Elden Ring, Ghost of Tsushima)
+    if any(w in msg_lower for w in ["zelda", "zelder", "breath of the wild", "tears of the kingdom", "ghost of tsushima", "discovery", "open world"]):
         return (
             "### 🗡️ **Top Open-World Discovery Games Like The Legend of Zelda**\n\n"
             "1. **Elden Ring** *(OpenCritic 95)* — Emergent discovery across a colossal fantasy landscape.\n"
@@ -778,10 +813,98 @@ LIVE NEWSROOM CONTEXT:
             "3. **Ghost of Tsushima** *(OpenCritic 87)* — Guiding wind navigation and fluid katana combat."
         )
 
+    # 6. Crime Sandboxes (GTA, Red Dead, Cyberpunk)
+    if any(w in msg_lower for w in ["gta", "grand theft auto", "red dead", "rockstar", "cyberpunk"]):
+        return (
+            "### 🤠 **Top Living World Sandboxes Like GTA & Red Dead Redemption**\n\n"
+            "1. **Cyberpunk 2077: Phantom Liberty** *(OpenCritic 89)* — Night City urban sandbox with cyberware builds.\n"
+            "2. **Sleeping Dogs: Definitive Edition** *(PC, PS4, Xbox)* — Hong Kong martial arts undercover cop drama.\n"
+            "3. **Mafia: Definitive Edition** *(PC, PS4, Xbox)* — 1930s mobster drama with authentic period cars."
+        )
+
+    # 7. Soulslikes
+    if any(w in msg_lower for w in ["soulslike", "fromsoftware", "dark souls", "bloodborne", "sekiro", "lies of p", "wukong"]):
+        return (
+            "### 💀 **Top Must-Play Soulslikes & Precision Action Games**\n\n"
+            "1. **Elden Ring: Shadow of the Erdtree** *(OpenCritic 95)* — The pinnacle of dark fantasy exploration.\n"
+            "2. **Lies of P** *(OpenCritic 84)* — Tight deflections inspired by Bloodborne and Sekiro in a Belle Époque world.\n"
+            "3. **Black Myth: Wukong** *(OpenCritic 82)* — Fast-paced staff martial arts combat and mythological spectacles."
+        )
+
+    # 8. JRPGs (Persona, FF7, Metaphor)
+    if any(w in msg_lower for w in ["persona", "metaphor", "final fantasy", "ff7", "jrpg", "turn based", "turn-based"]):
+        return (
+            "### 🎭 **Top Acclaimed JRPGs & Turn-Based Masterpieces**\n\n"
+            "1. **Metaphor: ReFantazio** *(OpenCritic 94)* — Tactical turn-based combat and royal kingdom tournament narrative.\n"
+            "2. **Persona 5 Royal** *(OpenCritic 94)* — High school simulator meets supernatural dungeon crawling.\n"
+            "3. **Final Fantasy VII Rebirth** *(OpenCritic 92)* — Expansive party synergy combat and cinematic storytelling."
+        )
+
+    # 9. Looter Shooters (Destiny, Helldivers, Remnant)
+    if any(w in msg_lower for w in ["destiny", "warframe", "remnant", "helldivers", "borderlands"]):
+        return (
+            "### 🛡️ **Top Co-Op Looter Shooters Like Destiny & Helldivers**\n\n"
+            "1. **Helldivers 2** *(OpenCritic 83)* — Co-op galactic war with stratagems and chaotic friendly fire.\n"
+            "2. **Remnant 2** *(OpenCritic 85)* — Tactical third-person shooting with procedural worlds and secret archetypes.\n"
+            "3. **Warframe** *(Free to Play)* — High-speed space ninja parkour and deep crafting."
+        )
+
+    # 10. Platformers (Astro Bot, Mario)
+    if any(w in msg_lower for w in ["platformer", "astro bot", "mario", "sonic", "hollow knight"]):
+        return (
+            "### 🍄 **Top 3D & 2D Platforming Masterpieces Like Mario & Astro Bot**\n\n"
+            "1. **Astro Bot** *(PS5 Exclusive — OpenCritic 94)* — Joyous level gimmicks and DualSense haptics.\n"
+            "2. **Super Mario Bros. Wonder / Odyssey** *(OpenCritic 91 / 97)* — Benchmark creative movement mechanics.\n"
+            "3. **Hollow Knight** *(Metacritic 90)* — Atmospheric 2D metroidvania with tight nail combat."
+        )
+
+    # 11. Sandbox Creation (Roblox, Minecraft)
+    if any(w in msg_lower for w in ["roblox", "roblx", "minecraft", "sandbox", "terraria"]):
+        return (
+            "### 🧱 **Top Games & Sandbox Creation Hubs Like Roblox & Minecraft**\n\n"
+            "1. **Minecraft** *(Metacritic 93)* — The ultimate voxel sandbox for survival and redstone engineering.\n"
+            "2. **LEGO Fortnite & Fortnite Creative / UEFN** — Massive creator ecosystem with millions of community worlds.\n"
+            "3. **Terraria** *(Metacritic 88)* — 2D action-adventure sandbox with deep boss progression."
+        )
+
+    # 12. Numerical Scores (60+, 70+, 80+, 85+, 90+)
+    score_match = re.search(r'(?:score(?: of)?|rated|rating of|above|at least)\s*(\d{2})|(\d{2})\s*\+', msg_lower)
+    if score_match:
+        min_score = int(score_match.group(1) or score_match.group(2))
+        if min_score <= 79:
+            return (
+                f"### ⭐ **Recent & Notable Games Rated {min_score}+ (OpenCritic / Metacritic)**\n\n"
+                "1. **Star Wars Outlaws** *(OpenCritic 76)* — Scoundrel syndicate adventure.\n"
+                "2. **The Crew Motorfest** *(OpenCritic 76)* — Hawaiian festival racing.\n"
+                "3. **Need for Speed Unbound** *(OpenCritic 77)* — Stylized anime street graffiti racing.\n"
+                "4. **Warhammer 40K: Space Marine 2** *(OpenCritic 82)* — Visceral third-person swarm brawler."
+            )
+        elif min_score <= 89:
+            return (
+                f"### ⭐ **Top Critically Acclaimed Games Rated {min_score}+**\n\n"
+                "1. **Like a Dragon: Infinite Wealth** *(OpenCritic 89)* — Massive Hawaiian RPG.\n"
+                "2. **Alan Wake 2** *(OpenCritic 89)* — Psychological survival horror benchmark.\n"
+                "3. **Dragon's Dogma 2** *(OpenCritic 86)* — Emergent fantasy climbing combat.\n"
+                "4. **Remnant 2** *(OpenCritic 85)* — Tactical procedural shooter."
+            )
+        else:
+            return (
+                f"### 🏆 **Elite Masterpieces Rated {min_score}+ (Mighty Tier)**\n\n"
+                "1. **Elden Ring: Shadow of the Erdtree** *(OpenCritic 95)*\n"
+                "2. **Astro Bot** *(PS5 Exclusive — OpenCritic 94)*\n"
+                "3. **Metaphor: ReFantazio** *(OpenCritic 94)*\n"
+                "4. **Final Fantasy VII Rebirth** *(PS5 Exclusive — OpenCritic 92)*"
+            )
+
+    # Default Contextual Recommendations
     return (
-        f"### 🎮 **GamePulse Concierge ({today_str})**\n\n"
-        f"I analyzed your request for **{msg_clean}**:\n\n"
-        f"Tell me your preferred platform (PC, PS5, Xbox, Switch) or genre focus to customize your recommendation further!"
+        f"### 🎮 **GamePulse Concierge**\n\n"
+        f"I analyzed recommendations matching **{msg_clean}**:\n\n"
+        "Here are three top-rated, player-favorite games across major genres right now:\n"
+        "1. **Elden Ring: Shadow of the Erdtree** *(OpenCritic 95)* — Grand open-world dark fantasy action RPG.\n"
+        "2. **Astro Bot** *(PlayStation 5 — OpenCritic 94)* — The gold standard of modern creative 3D platformers.\n"
+        "3. **Balatro** *(PC, Consoles, Mobile — OpenCritic 90)* — Hypnotic roguelike poker deckbuilder.\n\n"
+        "Tell me a specific genre (e.g., *Action RPG, Horror, Shooter, Open World*) or a game you enjoyed to narrow it down!"
     )
 
 
@@ -795,14 +918,12 @@ def run_news_aggregation_pipeline():
         return
 
     try:
-        # 1. Fetch each feed independently
         feed_results = []
         for feed in FEEDS:
             items = fetch_feed_items(feed)
             if items:
                 feed_results.append(items)
 
-        # 2. Round-Robin interleaving across all feeds to ensure balanced coverage
         selected_items = []
         seen_links = set()
         max_per_feed = 5
@@ -1217,16 +1338,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                 <p><strong>Hi! What do you want to do today?</strong></p>
                 <div class="suggestion-chips-wrap">
                     <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
+                    <button class="sugg-chip" onclick="sendPulsarPrompt('Give me games like Diablo')">⚔️ Action RPGs & Diablo</button>
                     <button class="sugg-chip" onclick="sendPulsarPrompt('Find me a game to play that is horror like Silent Hill')">🔦 Silent Hill Style Horror</button>
-                    <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games like COD made by Activision')">🎯 Activision Shooters</button>
                 </div>
             </div>
         </div>
 
         <div class="quick-actions-drawer" id="quickActionsDrawer">
+            <button class="quick-action-link" onclick="sendPulsarPrompt('Give me games like Diablo')">⚔️ Diablo & Isometric RPGs</button>
             <button class="quick-action-link" onclick="sendPulsarPrompt('Find me a game to play that is horror like Silent Hill')">🔦 Horror Games (Silent Hill / RE)</button>
             <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games like COD made by Activision')">🎯 Call of Duty & Activision</button>
-            <button class="quick-action-link" onclick="sendPulsarPrompt('Show me games similar to Uncharted or Tomb Raider')">🌿 Cinematic Action Adventures</button>
         </div>
 
         <div class="gemini-pill-container">
@@ -1302,8 +1423,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
                     <p><strong>Hi! What do you want to do today?</strong></p>
                     <div class="suggestion-chips-wrap">
                         <button class="sugg-chip" onclick="sendPulsarPrompt('Articles posted today')">📰 Articles posted today</button>
+                        <button class="sugg-chip" onclick="sendPulsarPrompt('Give me games like Diablo')">⚔️ Action RPGs & Diablo</button>
                         <button class="sugg-chip" onclick="sendPulsarPrompt('Find me a game to play that is horror like Silent Hill')">🔦 Silent Hill Style Horror</button>
-                        <button class="sugg-chip" onclick="sendPulsarPrompt('Show me games like COD made by Activision')">🎯 Activision Shooters</button>
                     </div>
                 </div>
             `;
