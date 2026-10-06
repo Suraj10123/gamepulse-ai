@@ -57,26 +57,16 @@ STOP_WORDS = {
 }
 
 # ---------------------------------------------------------------------------
-# LIVE GAME-RANKING DATA
-# ---------------------------------------------------------------------------
-# Do not hard-code a pretend "current" leaderboard here. Current/year and decade
-# rankings are fetched from Metacritic at request time with a small, clearly
-# labeled fallback snapshot in the intelligence engine below.
-
-# ---------------------------------------------------------------------------
 # VERIFIED GAME LOOKUP ALIASES / FALLBACK SNAPSHOTS
 # ---------------------------------------------------------------------------
-# These are fallbacks only. The intelligence engine tries live Metacritic data
-# first and marks any cached/static value as a snapshot rather than pretending
-# it is live. This prevents stale scores from being presented as current fact.
 GAME_LOOKUP_REGISTRY = {
     "ace combat 8": {
         "title": "Ace Combat 8: Wings of the Brave",
         "aliases": [
             "ace combat 8",
             "ace combat 8 wings of the brave",
-            "ace combat 8 wings of the brave",
-            "ace combat 8 wings of the brave",
+            "ace combat 8: wings of the brave",
+            "ace combat viii",
         ],
         "year": 2026,
         "release_date": "2026-10-02",
@@ -113,8 +103,6 @@ GAME_LOOKUP_REGISTRY = {
     },
 }
 
-# A deliberately small fallback set used only if the live Metacritic browse page
-# is unavailable. These values are snapshots, not the source of truth.
 CURRENT_YEAR_FALLBACK = [
     {
         "title": "Sektori",
@@ -154,30 +142,20 @@ CURRENT_YEAR_FALLBACK = [
 ]
 
 DECADE_FALLBACK = [
-    # 2016
     {"title": "Overwatch", "year": 2016, "score": 90, "meta_url": "https://www.metacritic.com/game/overwatch/"},
-    # 2017
     {"title": "The Legend of Zelda: Breath of the Wild", "year": 2017, "score": 97, "meta_url": "https://www.metacritic.com/game/the-legend-of-zelda-breath-of-the-wild/"},
     {"title": "Super Mario Odyssey", "year": 2017, "score": 97, "meta_url": "https://www.metacritic.com/game/super-mario-odyssey/"},
-    # 2018
     {"title": "Red Dead Redemption 2", "year": 2018, "score": 97, "meta_url": "https://www.metacritic.com/game/red-dead-redemption-2/"},
-    # 2019
     {"title": "Resident Evil 2", "year": 2019, "score": 91, "meta_url": "https://www.metacritic.com/game/resident-evil-2/"},
     {"title": "Sekiro: Shadows Die Twice", "year": 2019, "score": 90, "meta_url": "https://www.metacritic.com/game/sekiro-shadows-die-twice/"},
-    # 2020
     {"title": "Persona 5 Royal", "year": 2020, "score": 95, "meta_url": "https://www.metacritic.com/game/persona-5-royal/"},
     {"title": "The Last of Us Part II", "year": 2020, "score": 93, "meta_url": "https://www.metacritic.com/game/the-last-of-us-part-ii/"},
-    # 2021
     {"title": "Forza Horizon 5", "year": 2021, "score": 92, "meta_url": "https://www.metacritic.com/game/forza-horizon-5/"},
-    # 2022
     {"title": "Elden Ring", "year": 2022, "score": 96, "meta_url": "https://www.metacritic.com/game/elden-ring/"},
-    # 2023
     {"title": "Baldur's Gate 3", "year": 2023, "score": 96, "meta_url": "https://www.metacritic.com/game/baldurs-gate-3/"},
     {"title": "The Legend of Zelda: Tears of the Kingdom", "year": 2023, "score": 96, "meta_url": "https://www.metacritic.com/game/the-legend-of-zelda-tears-of-the-kingdom/"},
-    # 2024
     {"title": "Astro Bot", "year": 2024, "score": 94, "meta_url": "https://www.metacritic.com/game/astro-bot/"},
     {"title": "Metaphor: ReFantazio", "year": 2024, "score": 94, "meta_url": "https://www.metacritic.com/game/metaphor-refantazio/"},
-    # 2025
     {"title": "Hades II", "year": 2025, "score": 95, "meta_url": "https://www.metacritic.com/game/hades-ii/"},
     {"title": "Clair Obscur: Expedition 33", "year": 2025, "score": 92, "meta_url": "https://www.metacritic.com/game/clair-obscur-expedition-33/"},
 ] + CURRENT_YEAR_FALLBACK
@@ -190,7 +168,7 @@ KNOWN_GAME_SLUGS = {
     "gta 6": "grand-theft-auto-vi",
     "gta vi": "grand-theft-auto-vi",
     "grand theft auto vi": "grand-theft-auto-vi",
-    "s e k t o r i": "sektori",
+    "sektori": "sektori",
 }
 
 # ---------------------------------------------------------------------------
@@ -393,27 +371,24 @@ ALL_ARCHETYPES = [
             {"title": "Prey (2017)", "platforms": ["PC", "PS4", "Xbox"], "year": 2017, "score": 84, "desc": "Arkane's sci-fi masterpiece aboard Talos I: turn into a coffee mug, build Gloo Cannon bridges, and hack alien systems."},
             {"title": "Sniper Elite 5", "platforms": ["PC", "PS5", "Xbox"], "year": 2022, "score": 79, "desc": "Long-range ballistics, wind and bullet-drop physics, and signature X-ray kill cam assassinations across WWII maps."}
         ]
-    }
-]
-
-ARCHETYPES_BY_ID = {a["id"]: a for a in ALL_ARCHETYPES}
-
-if not any(a.get("id") == "platformer" for a in ALL_ARCHETYPES):
-    ALL_ARCHETYPES.append({
+    },
+    {
         "id": "platformer",
-        "title": "Platformers",
+        "title": "Platformers (Mario, Zelda & Astro Bot)",
         "icon": "🕹️",
-        "keywords": ["platformer", "platformers", "2d platformer", "3d platformer", "3d platformers"],
+        "keywords": ["platformer", "platformers", "2d platformer", "3d platformer", "3d platformers", "precision platformer"],
         "description": "Precision jumps, exploration, movement mastery, and inventive level design.",
         "games": [
             {"title": "The Legend of Zelda: Breath of the Wild", "platforms": ["Switch", "Wii U"], "year": 2017, "score": 97, "desc": "Open-air exploration, physics-driven traversal, and enormous freedom."},
             {"title": "Super Mario Odyssey", "platforms": ["Switch"], "year": 2017, "score": 97, "desc": "Exceptional 3D movement, Cappy mechanics, and creative sandbox kingdoms."},
-            {"title": "Metroid Dread", "platforms": ["Switch"], "year": 2021, "score": 88, "desc": "Fast, precise 2D traversal and action with excellent boss encounters."},
-            {"title": "Super Mario Bros. Wonder", "platforms": ["Switch"], "year": 2023, "score": 92, "desc": "Inventive 2D levels, Wonder Effects, and excellent co-op."},
             {"title": "Astro Bot", "platforms": ["PS5"], "year": 2024, "score": 94, "desc": "Polished 3D platforming with tactile DualSense-driven set pieces."},
-        ],
-    })
-    ARCHETYPES_BY_ID = {a["id"]: a for a in ALL_ARCHETYPES}
+            {"title": "Super Mario Bros. Wonder", "platforms": ["Switch"], "year": 2023, "score": 92, "desc": "Inventive 2D levels, Wonder Effects, and excellent co-op."},
+            {"title": "Metroid Dread", "platforms": ["Switch"], "year": 2021, "score": 88, "desc": "Fast, precise 2D traversal and action with excellent boss encounters."}
+        ]
+    }
+]
+
+ARCHETYPES_BY_ID = {a["id"]: a for a in ALL_ARCHETYPES}
 
 # ---------------------------------------------------------------------------
 # PULSAR AI INTELLIGENCE ENGINE
@@ -607,7 +582,6 @@ def remove_memory_matches(memory, needle):
 
 
 def extract_memory_update(message, memory):
-    """Infer useful gaming preferences, while allowing explicit remember/forget commands."""
     text = re.sub(r"\s+", " ", str(message or "").strip())
     lower = text.lower()
     changed = []
@@ -645,7 +619,7 @@ def extract_memory_update(message, memory):
     if hates and add_memory_item(memory, "disliked_games", hates.group(1)):
         changed.append("dislike")
 
-    platform = re.search(r"\b(?:i\s+(?:mostly\s+)?play on|i\s+(?:mostly\s+)?play on|my\s+(?:main\s+)?platform is|i use)\s+(pc|ps5|ps4|xbox|switch|steam deck|mobile)\b", text, re.I)
+    platform = re.search(r"\b(?:i\s+(?:mostly\s+)?play on|my\s+(?:main\s+)?platform is|i use)\s+(pc|ps5|ps4|xbox|switch|steam deck|mobile)\b", text, re.I)
     if platform and add_memory_item(memory, "platforms", platform.group(1).upper() if platform.group(1).lower() != "steam deck" else "Steam Deck"):
         changed.append("platform")
 
@@ -760,8 +734,6 @@ def match_archetype_safe(query):
 
 
 class LinkTextParser(HTMLParser):
-    """Extract clean Metacritic game links without swallowing an entire card."""
-
     def __init__(self):
         super().__init__()
         self.current = None
@@ -802,7 +774,6 @@ class LinkTextParser(HTMLParser):
 
 
 def clean_metacritic_anchor_title(href, raw_title):
-    """Turn noisy card text into a usable game title."""
     raw_title = re.sub(r"\s+", " ", html.unescape(raw_title or "")).strip()
     raw_title = re.sub(r"^\s*\d+\s*[\.)\-:]\s*", "", raw_title)
     date_marker = re.search(
@@ -841,11 +812,11 @@ def clean_metacritic_anchor_title(href, raw_title):
     return known.get(slug, re.sub(r"[-_]+", " ", slug).strip().title())
 
 
-def cached_fetch(url, timeout=6):
+def cached_fetch(url, timeout=3):
     req = urllib.request.Request(
         url,
         headers={
-            "User-Agent": "GamePulseAI/3.0 (+gaming intelligence; contact local operator)",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.8",
         },
@@ -926,11 +897,10 @@ def parse_metacritic_game_page(raw_html, requested_title, meta_url):
 
 
 def resolve_metacritic_url(title):
-    """Resolve a title through Metacritic search before falling back to slug heuristics."""
     query = urllib.parse.quote(title.strip())
     search_url = f"https://www.metacritic.com/search/{query}/"
     try:
-        raw = cached_fetch(search_url, timeout=5)
+        raw = cached_fetch(search_url, timeout=3)
         parser = LinkTextParser()
         parser.feed(raw)
         title_l = title.lower()
@@ -954,10 +924,10 @@ def fetch_metacritic_game(title, fallback=None):
         candidate_urls.append(fallback["meta_url"])
     candidate_urls.append(metacritic_url_for(title))
 
-    # A search lookup catches titles whose official slug is not obvious.
-    resolved = resolve_metacritic_url(title)
-    if resolved not in candidate_urls:
-        candidate_urls.insert(0, resolved)
+    if not fallback.get("meta_url"):
+        resolved = resolve_metacritic_url(title)
+        if resolved not in candidate_urls:
+            candidate_urls.insert(0, resolved)
 
     now = time.time()
     for url in candidate_urls:
@@ -966,7 +936,7 @@ def fetch_metacritic_game(title, fallback=None):
         if cached and now - cached["time"] < METACRITIC_CACHE_TTL:
             return cached["data"]
         try:
-            raw = cached_fetch(url)
+            raw = cached_fetch(url, timeout=3)
             data = parse_metacritic_game_page(raw, title, url)
             METACRITIC_CACHE[cache_key] = {"time": now, "data": data}
             if data.get("score") is not None or data.get("release_date"):
@@ -974,12 +944,13 @@ def fetch_metacritic_game(title, fallback=None):
         except Exception:
             continue
 
-    # No live source: return a clearly labeled snapshot, never fabricate "today".
     url = candidate_urls[0] if candidate_urls else metacritic_url_for(title)
+    fb_score = fallback.get("fallback_score") if fallback.get("fallback_score") is not None else fallback.get("score")
+    fb_date = fallback.get("release_date") or (f"{fallback['year']}-01-01" if fallback.get("year") else None)
     return {
         "title": fallback.get("title", title),
-        "score": fallback.get("fallback_score"),
-        "release_date": fallback.get("release_date"),
+        "score": fb_score,
+        "release_date": fb_date,
         "review_count": None,
         "platforms": [],
         "meta_url": url,
@@ -987,8 +958,8 @@ def fetch_metacritic_game(title, fallback=None):
         "verified_live": False,
     }
 
+
 def parse_metacritic_browse(raw_html, limit=30):
-    """Parse Metacritic finder cards conservatively and sort by actual score."""
     parser = LinkTextParser()
     try:
         parser.feed(raw_html)
@@ -1101,7 +1072,9 @@ def fetch_metacritic_browse(year=None, min_year=None, max_year=None, limit=30, p
         platform=platform, genre=genre
     )
     try:
-        data = parse_metacritic_browse(cached_fetch(url), limit=limit)
+        data = parse_metacritic_browse(cached_fetch(url, timeout=3), limit=limit)
+        if not data:
+            raise ValueError("empty browse data")
         BROWSE_CACHE[cache_key] = {"time": now, "data": data}
         return data
     except Exception:
@@ -1109,7 +1082,6 @@ def fetch_metacritic_browse(year=None, min_year=None, max_year=None, limit=30, p
             local_arch = next((a for a in ALL_ARCHETYPES if a.get("id") == "platformer"), None)
             data = []
             if local_arch:
-                data = []
                 for g in local_arch.get("games", []):
                     copy = dict(g)
                     copy["release_date"] = copy.get("release_date") or f"{copy.get('year', CURRENT_YEAR)}-01-01"
@@ -1136,14 +1108,10 @@ def fetch_metacritic_browse(year=None, min_year=None, max_year=None, limit=30, p
 def extract_game_candidate(message, history, state):
     text_l = message.lower()
 
-    # Exact/alias registry match first.
     for key, game in GAME_LOOKUP_REGISTRY.items():
         if any(alias in text_l for alias in game["aliases"]):
             return key, game
 
-    # Follow-up references must be resolved before generic "about X" extraction.
-    # Otherwise "what about that game?" would incorrectly create a new game called
-    # "that game".
     if re.search(r"\b(it|that game|this game|that one|the game|the same)\b", text_l):
         if state.get("last_game"):
             key = state["last_game"]
@@ -1160,8 +1128,6 @@ def extract_game_candidate(message, history, state):
         if g["title"].lower() in text_l:
             return slugify_game(g["title"]), g
 
-    # For natural-language "review <game>" / "tell me about <game>" queries,
-    # preserve the user's title instead of forcing a hardcoded registry match.
     patterns = [
         r"\b(?:review|reviews|score|metacritic score|details|info on|information on)\s+(?:for\s+)?(.+)$",
         r"\bwhat (?:do|does) (?:you|it) know about\s+(.+)$",
@@ -1177,6 +1143,7 @@ def extract_game_candidate(message, history, state):
         return slugify_game(candidate), {"title": candidate}
 
     return None, None
+
 
 def extract_comparison_titles(message):
     text = re.sub(r"\s+", " ", str(message or "").strip())
@@ -1294,25 +1261,6 @@ def fetch_ranked_games_for_request(message, filters, intent):
     """Resolve ranking requests, including platform+genre combinations."""
     start_year, end_year, _, _ = rolling_decade_years()
     genres = genre_slugs_for_request(message)
-    if intent == "COMPARISON":
-        games = browse[:2]
-        if len(games) >= 2:
-            a, b = games[0], games[1]
-            def score_text(g):
-                return f"{g.get('score')}/100" if g.get('score') is not None else "Not currently scored"
-            lines = [
-                f"⚔️ **{a.get('title', 'Game A')} vs. {b.get('title', 'Game B')}**", "",
-                f"| | {a.get('title', 'Game A')} | {b.get('title', 'Game B')} |",
-                "|---|---|---|",
-                f"| Metacritic | {score_text(a)} | {score_text(b)} |",
-                f"| Release | {a.get('release_date') or 'Unknown'} | {b.get('release_date') or 'Unknown'} |",
-                "",
-                f"- [Metacritic: {a.get('title', 'Game A')}]({a.get('meta_url', '#')})",
-                f"- [Metacritic: {b.get('title', 'Game B')}]({b.get('meta_url', '#')})",
-                "",
-                "Ask me which one fits your preferences, platform, or play style better and I’ll make the recommendation using your saved memory."
-            ]
-            return "\n".join(lines)
 
     if intent == "DECADE":
         if genres:
@@ -1332,6 +1280,7 @@ def fetch_ranked_games_for_request(message, filters, intent):
         if filters.get("platform") and data and all(not g.get("verified_live") for g in data):
             data = fallback_filter_platform(data, filters["platform"])
         return data
+
     if intent == "CURRENT_YEAR":
         if genres:
             combined, seen = [], set()
@@ -1349,6 +1298,7 @@ def fetch_ranked_games_for_request(message, filters, intent):
         if filters.get("platform") and data and all(not g.get("verified_live") for g in data):
             data = fallback_filter_platform(data, filters["platform"])
         return data
+
     return []
 
 
@@ -1431,7 +1381,7 @@ SOURCES:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=25) as resp:
+        with urllib.request.urlopen(req, timeout=12) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         reply = data["choices"][0]["message"]["content"].strip()
         return reply or None
@@ -1441,6 +1391,27 @@ SOURCES:
 
 def deterministic_response(user_message, intent, game, browse, articles, arch, filters, state):
     msg_l = user_message.lower()
+
+    if intent == "COMPARISON":
+        games = browse[:2] if browse else []
+        if len(games) >= 2:
+            a, b = games[0], games[1]
+            def score_text(g):
+                return f"{g.get('score')}/100" if g.get('score') is not None else "Not currently scored"
+            lines = [
+                f"⚔️ **{a.get('title', 'Game A')} vs. {b.get('title', 'Game B')}**", "",
+                f"| | {a.get('title', 'Game A')} | {b.get('title', 'Game B')} |",
+                "|---|---|---|",
+                f"| Metacritic | {score_text(a)} | {score_text(b)} |",
+                f"| Release | {a.get('release_date') or 'Unknown'} | {b.get('release_date') or 'Unknown'} |",
+                "",
+                f"- [Metacritic: {a.get('title', 'Game A')}]({a.get('meta_url', '#')})",
+                f"- [Metacritic: {b.get('title', 'Game B')}]({b.get('meta_url', '#')})",
+                "",
+                "Ask me which one fits your preferences, platform, or play style better and I’ll make the recommendation using your saved memory."
+            ]
+            return "\n".join(lines)
+
     if browse:
         if intent == "CURRENT_YEAR":
             browse = [g for g in browse if g.get("release_date") and g["release_date"] <= CURRENT_DATE.isoformat()]
@@ -1559,7 +1530,7 @@ def generate_pulsar_response(user_message, history=None, session_id=None, user_i
     user_id = str(user_id or "").strip()
     user_memory = load_user_memory(user_id)
     user_memory, memory_action = extract_memory_update(msg, user_memory)
-    if memory_action.startswith("updated:") or memory_action.startswith("removed:") or memory_action in {"cleared", "none"} and re.search(r"\b(?:remember|forget|delete|remove)\b", msg, re.I):
+    if memory_action.startswith("updated:") or memory_action.startswith("removed:") or (memory_action in {"cleared", "none"} and re.search(r"\b(?:remember|forget|delete|remove)\b", msg, re.I)):
         save_user_memory(user_id, user_memory)
 
     msg_l = msg.lower()
@@ -1569,10 +1540,24 @@ def generate_pulsar_response(user_message, history=None, session_id=None, user_i
             state["history"] = (history + [{"role": "user", "content": msg}, {"role": "assistant", "content": reply}])[-MAX_CHAT_HISTORY:]
         return reply
 
+    if re.match(r"^\s*(?:remember|forget|delete)\b", msg_l):
+        if memory_action.startswith("updated:"):
+            items = memory_action.split(":", 1)[1]
+            reply = f"🧠 **Got it!** I have updated your gaming preferences ({items}). Ask me for recommendations or say **what do you remember about me** anytime."
+        elif memory_action == "cleared":
+            reply = "🧠 **Pulsar Memory cleared.** I will start fresh with your saved gaming preferences."
+        elif memory_action.startswith("removed:"):
+            reply = "🧠 **Updated.** I have removed that from your saved preferences."
+        else:
+            reply = "🧠 I have noted that in your gaming preferences! Ask me for recommendations or say **what do you remember about me** anytime."
+        with SESSION_LOCK:
+            state["history"] = (history + [{"role": "user", "content": msg}, {"role": "assistant", "content": reply}])[-MAX_CHAT_HISTORY:]
+        return reply
+
     filters = parse_query_filters(msg)
 
     is_decade = bool(re.search(r"\b(last decade|past decade|past 10 years|last 10 years|last ten years)\b", msg_l))
-    is_current = bool(re.search(r"\b(best games right now|best games out right now|out right now|out now|best of 2026|best games of 2026|highest rated games of the year|highest rated 2026)\b", msg_l))
+    is_current = bool(re.search(r"\b(best games right now|best games out right now|out right now|out now|best of 2026|best games of 2026|highest rated games of the year|highest rated 2026|highest rated games)\b", msg_l))
     is_reviewish = bool(re.search(r"\b(review|reviews|score|metacritic|opencritic|rating|rated)\b", msg_l))
     is_like = bool(re.search(r"\b(games like|similar to|alternative to|recommendations like)\b", msg_l))
     is_contextual_ranking = (
@@ -1622,7 +1607,7 @@ def generate_pulsar_response(user_message, history=None, session_id=None, user_i
         context = source_block(game=game, articles=articles)
 
     else:
-        arch = match_archetype_safe(msg)
+        arch = arch_match
         state["last_topic"] = arch["id"] if arch else state.get("last_topic")
         if filters.get("platform"):
             state["last_platform"] = filters["platform"]
@@ -1637,7 +1622,6 @@ def generate_pulsar_response(user_message, history=None, session_id=None, user_i
 
     state["memory_action"] = memory_action
 
-    # Persist the actual turn in this session so the next request can resolve references.
     with SESSION_LOCK:
         state["history"] = (history + [
             {"role": "user", "content": msg},
@@ -1645,6 +1629,7 @@ def generate_pulsar_response(user_message, history=None, session_id=None, user_i
         ])[-MAX_CHAT_HISTORY:]
         state["last_seen"] = time.time()
     return reply
+
 
 # ---------------------------------------------------------------------------
 # DATABASE INITIALIZATION
@@ -1675,9 +1660,6 @@ def init_db():
         )
     """)
 
-    # Remove the previous version's fabricated demo rows. Live RSS data is now
-    # the source for the feed, so a review never receives today's timestamp just
-    # because the application was started today.
     old_seed_urls = [
         "https://www.gamespot.com/reviews/ace-combat-8-review/",
         "https://www.ign.com/articles/control-resonant-review",
@@ -1698,7 +1680,6 @@ def init_db():
     placeholders = ",".join("?" for _ in old_seed_urls)
     cur.execute(f"DELETE FROM articles WHERE url IN ({placeholders})", old_seed_urls)
 
-    # Re-tag legacy rumor rows without deleting real historical coverage.
     cur.execute("""
         UPDATE articles
         SET tag = 'RUMOR'
@@ -1771,6 +1752,7 @@ def categorize_article(title, summary):
 
     return 'ALL'
 
+
 def extract_image_url(item_xml):
     for elem in item_xml:
         tag = elem.tag.lower()
@@ -1813,7 +1795,6 @@ def feed_link(item):
 
 
 def run_news_aggregation_pipeline(force=False):
-    """Fetch all configured feeds; failures are isolated and observable."""
     global LAST_AGGREGATION_AT
     now = time.time()
     with FEED_LOCK:
@@ -1831,7 +1812,7 @@ def run_news_aggregation_pipeline(force=False):
             req = urllib.request.Request(
                 f["url"],
                 headers={
-                    "User-Agent": "GamePulseAI/4.0 (+live gaming feed aggregator)",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, */*",
                 },
             )
@@ -1839,7 +1820,7 @@ def run_news_aggregation_pipeline(force=False):
             last_error = None
             for attempt in range(2):
                 try:
-                    with urllib.request.urlopen(req, timeout=12) as resp:
+                    with urllib.request.urlopen(req, timeout=8) as resp:
                         xml_data = resp.read()
                     break
                 except Exception as exc:
@@ -1866,9 +1847,6 @@ def run_news_aggregation_pipeline(force=False):
 
                 inferred = categorize_article(title, desc_clean)
                 default_tag = f.get("default_tag") or "ALL"
-                # General feeds must preserve inferred categories; otherwise every
-                # article stays ALL and category tabs become permanently empty.
-                # Dedicated feeds (e.g. Reviews) keep their explicit category.
                 tag = inferred if default_tag == "ALL" else default_tag
                 if inferred in {"RUMOR", "UPDATE"} and default_tag == "ALL":
                     tag = inferred
@@ -1911,7 +1889,6 @@ def run_news_aggregation_pipeline(force=False):
 
 
 def reclassify_existing_articles():
-    """Repair rows inserted by older builds that labeled every article ALL."""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     updated = 0
@@ -1958,7 +1935,6 @@ def feed_count(tag="ALL"):
 
 
 def ensure_feed_data(tag="ALL"):
-    """Never serve a silently empty feed when synchronization has not run yet."""
     if feed_count(tag) == 0:
         run_news_aggregation_pipeline(force=True)
 
@@ -2178,7 +2154,8 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
         cards = []
         for r in rows:
             r_id, r_title, r_summary, r_url, r_source, r_tag, r_pub, r_score, r_img = r
-            tag_class = f"badge-{re.sub(r"[^a-z0-9-]", "", str(r_tag).lower())}"
+            clean_tag = re.sub(r'[^a-z0-9-]', '', str(r_tag).lower())
+            tag_class = f"badge-{clean_tag}"
             safe_url = html.escape(r_url or "#", quote=True)
             safe_img = html.escape(r_img or "", quote=True)
             img_html = f'<div class="card-img" style="background-image: url(&quot;{safe_img}&quot;);"></div>' if safe_img else '<div class="card-img placeholder-img">🎮</div>'
@@ -2842,15 +2819,30 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
     <script>
         let chatHistory = [];
         let sessionId = null;
-        try {{
+        try {
             sessionId = sessionStorage.getItem('gp_session_id');
-        }} catch (_) {{}}
-        if (!sessionId) {{
-            sessionId = (crypto.randomUUID ? crypto.randomUUID() : `${{Date.now()}}-${{Math.random()}}`);
-            try {{ sessionStorage.setItem('gp_session_id', sessionId); }} catch (_) {{}}
-        }}
+        } catch (_) {}
+        if (!sessionId) {
+            sessionId = (window.crypto && crypto.randomUUID ? crypto.randomUUID() : 's-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9));
+            try { sessionStorage.setItem('gp_session_id', sessionId); } catch (_) {}
+        }
 
-        function setViewMode(mode) {{
+        let userId = null;
+        try {
+            userId = localStorage.getItem('gp_user_id');
+        } catch (_) {}
+        if (!userId) {
+            userId = (window.crypto && crypto.randomUUID ? crypto.randomUUID() : 'u-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9));
+            try { localStorage.setItem('gp_user_id', userId); } catch (_) {}
+        }
+
+        let memoryCache = {};
+        try {
+            const savedMem = localStorage.getItem('gp_memory_v1');
+            if (savedMem) memoryCache = JSON.parse(savedMem);
+        } catch (_) {}
+
+        function setViewMode(mode) {
             const grid = document.getElementById('articlesGrid');
             const gBtn = document.getElementById('gridBtn');
             const lBtn = document.getElementById('listBtn');
@@ -2860,76 +2852,76 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             gBtn.classList.toggle('active', !list);
             lBtn.setAttribute('aria-pressed', String(list));
             gBtn.setAttribute('aria-pressed', String(!list));
-            try {{ localStorage.setItem('gp_view_mode', list ? 'list' : 'grid'); }} catch (_) {{}}
-        }}
+            try { localStorage.setItem('gp_view_mode', list ? 'list' : 'grid'); } catch (_) {}
+        }
 
         // Restore view mode on page load
-        document.addEventListener('DOMContentLoaded', () => {{
+        document.addEventListener('DOMContentLoaded', () => {
             const savedMode = localStorage.getItem('gp_view_mode');
-            if (savedMode === 'list') {{
+            if (savedMode === 'list') {
                 setViewMode('list');
-            }}
-        }});
+            }
+        });
 
-        function toggleChat() {{
+        function toggleChat() {
             const d = document.getElementById('chatDrawer');
-            if (d.style.display === 'flex') {{
+            if (d.style.display === 'flex') {
                 d.style.display = 'none';
-            }} else {{
+            } else {
                 d.style.display = 'flex';
                 document.getElementById('chatInput').focus();
-            }}
-        }}
+            }
+        }
 
-        function askChip(text) {{
+        function askChip(text) {
             document.getElementById('chatInput').value = text;
             sendChat();
-        }}
+        }
 
-        function escapeHtml(value) {{
+        function escapeHtml(value) {
             return String(value)
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;')
                 .replace(/'/g, '&#039;');
-        }}
+        }
 
-        function renderChatMarkdown(text) {{
+        function renderChatMarkdown(text) {
             let safe = escapeHtml(text);
             safe = safe.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
                 '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
             safe = safe.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
             safe = safe.replace(/\*(.*?)\*/g, '<em>$1</em>');
             return safe.replace(/\n/g, '<br>');
-        }}
+        }
 
-        function clearPulsarMemory() {{
+        function clearPulsarMemory() {
             if (!confirm('Clear Pulsar’s saved gaming preferences and memory?')) return;
-            fetch('/api/chat', {{
+            fetch('/api/chat', {
                 method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }},
-                body: JSON.stringify({{
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
                     message: 'clear memory',
                     history: chatHistory.slice(-24),
                     session_id: sessionId,
                     user_id: userId,
-                    memory: {{}},
+                    memory: {},
                     clear_memory: true
-                }})
-            }})
+                })
+            })
             .then(r => r.json())
-            .then(data => {{
-                memoryCache = {{}};
-                try {{ localStorage.removeItem('gp_memory_v1'); }} catch (_) {{}}
+            .then(data => {
+                memoryCache = {};
+                try { localStorage.removeItem('gp_memory_v1'); } catch (_) {}
                 const p = document.createElement('div');
                 p.className = 'msg msg-pulsar';
                 p.textContent = data.reply || 'Pulsar Memory cleared.';
                 document.getElementById('chatMsgs').appendChild(p);
-            }});
-        }}
+            });
+        }
 
-        function sendChat() {{
+        function sendChat() {
             const inp = document.getElementById('chatInput');
             const msg = inp.value.trim();
             if (!msg) return;
@@ -2949,49 +2941,59 @@ class GamePulseHandler(http.server.BaseHTTPRequestHandler):
             box.appendChild(loadDiv);
             box.scrollTop = box.scrollHeight;
 
-            fetch('/api/chat', {{
-                method: 'POST',
-                headers: {{ 'Content-Type': 'application/json' }},
-                body: JSON.stringify({{
-                    message: msg,
-                    history: chatHistory.slice(-24),
-                    session_id: sessionId,
-                    user_id: userId,
-                    memory: memoryCache
-                }})
-            }})
-            .then(async res => {{
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error || 'Chat request failed');
-                return data;
-            }})
-            .then(data => {{
-                loadDiv.remove();
-                if (data.session_id) {{
-                    sessionId = data.session_id;
-                    try {{ sessionStorage.setItem('gp_session_id', sessionId); }} catch (_) {{}}
-                }}
-                if (data.memory) {{
-                    memoryCache = data.memory;
-                    try {{ localStorage.setItem('gp_memory_v1', JSON.stringify(memoryCache)); }} catch (_) {{}}
-                }}
-                chatHistory.push({{ role: 'user', content: msg }});
-                chatHistory.push({{ role: 'assistant', content: data.reply }});
+            try {
+                fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: msg,
+                        history: chatHistory.slice(-24),
+                        session_id: sessionId,
+                        user_id: userId,
+                        memory: memoryCache
+                    })
+                })
+                .then(async res => {
+                    const data = await res.json();
+                    if (!res.ok) throw new Error(data.error || 'Chat request failed');
+                    return data;
+                })
+                .then(data => {
+                    try { loadDiv.remove(); } catch (_) {}
+                    if (data.session_id) {
+                        sessionId = data.session_id;
+                        try { sessionStorage.setItem('gp_session_id', sessionId); } catch (_) {}
+                    }
+                    if (data.memory) {
+                        memoryCache = data.memory;
+                        try { localStorage.setItem('gp_memory_v1', JSON.stringify(memoryCache)); } catch (_) {}
+                    }
+                    chatHistory.push({ role: 'user', content: msg });
+                    chatHistory.push({ role: 'assistant', content: data.reply });
 
-                const pDiv = document.createElement('div');
-                pDiv.className = 'msg msg-pulsar';
-                pDiv.innerHTML = renderChatMarkdown(data.reply);
-                box.appendChild(pDiv);
-                box.scrollTop = box.scrollHeight;
-            }})
-            .catch(err => {{
-                loadDiv.remove();
+                    const pDiv = document.createElement('div');
+                    pDiv.className = 'msg msg-pulsar';
+                    pDiv.innerHTML = renderChatMarkdown(data.reply);
+                    box.appendChild(pDiv);
+                    box.scrollTop = box.scrollHeight;
+                })
+                .catch(err => {
+                    try { loadDiv.remove(); } catch (_) {}
+                    const eDiv = document.createElement('div');
+                    eDiv.className = 'msg msg-pulsar';
+                    eDiv.innerHTML = '<span style="color:var(--accent-red)">Pulsar could not reach the gaming intelligence service. Please retry.</span>';
+                    box.appendChild(eDiv);
+                    box.scrollTop = box.scrollHeight;
+                });
+            } catch (err) {
+                try { loadDiv.remove(); } catch (_) {}
                 const eDiv = document.createElement('div');
                 eDiv.className = 'msg msg-pulsar';
-                eDiv.innerHTML = '<span style="color:var(--accent-red)">Pulsar could not reach the gaming intelligence service. Please retry.</span>';
+                eDiv.innerHTML = '<span style="color:var(--accent-red)">Error: ' + escapeHtml(err.message) + '</span>';
                 box.appendChild(eDiv);
-            }});
-        }}
+                box.scrollTop = box.scrollHeight;
+            }
+        }
 
     </script>
 </body>
