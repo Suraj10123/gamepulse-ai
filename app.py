@@ -1401,494 +1401,977 @@ ALL_ARCHETYPES = [
 
 
 # ---------------------------------------------------------------------------
-# User & Session Memory
+# Pulsar Session Memory & Grounded Gaming Intelligence
 # ---------------------------------------------------------------------------
 
-USER_MEMORIES = {}
+SESSION_LOCK = threading.RLock()
+PULSAR_SESSIONS = {}
+PULSAR_SESSION_TTL = 60 * 60 * 8
+METACRITIC_CACHE = {}
+METACRITIC_CACHE_LOCK = threading.RLock()
+METACRITIC_CACHE_TTL = 60 * 10
+
+PLATFORM_ALIASES = {
+    "pc": ["pc", "steam", "windows"],
+    "ps5": ["ps5", "playstation 5", "playstation 5"],
+    "ps4": ["ps4", "playstation 4"],
+    "xbox": ["xbox", "xbox series", "series x", "series s", "xbox one"],
+    "switch": ["switch", "nintendo switch", "switch 2"],
+    "steam deck": ["steam deck"],
+}
+
+METACRITIC_PLATFORM_SLUGS = {
+    "pc": "pc",
+    "ps5": "playstation",
+    "ps4": "ps4",
+    "xbox": "xboxone",
+    "switch": "switch",
+    "dreamcast": "dreamcast",
+    "n64": "n64",
+    "gamecube": "gamecube",
+    "wii": "wii",
+}
+
+GENRE_ALIASES = {
+    "rpg": ["rpg", "role playing", "role-playing"],
+    "jrpg": ["jrpg", "japanese rpg"],
+    "crpg": ["crpg", "computer rpg"],
+    "action rpg": ["action rpg", "action-rpg"],
+    "soulslike": ["soulslike", "souls-like", "souls like"],
+    "fps": ["fps", "first person shooter", "first-person shooter"],
+    "horror": ["horror", "survival horror", "psychological horror"],
+    "platformer": ["platformer", "platformers", "platforming"],
+    "strategy": ["strategy", "4x", "turn based strategy", "rts"],
+    "roguelike": ["roguelike", "roguelite", "rogue-like", "rogue-lite"],
+    "deckbuilder": ["deckbuilder", "deck builder", "card battler"],
+    "racing": ["racing", "racer"],
+    "fighting": ["fighting", "fighter", "fighting game"],
+    "stealth": ["stealth", "stealth game"],
+    "metroidvania": ["metroidvania"],
+    "cozy": ["cozy", "cosy"],
+}
+
+
+def _purge_pulsar_sessions():
+    cutoff = time.time() - PULSAR_SESSION_TTL
+    with SESSION_LOCK:
+        stale = [sid for sid, state in PULSAR_SESSIONS.items() if state.get("last_seen", 0) < cutoff]
+        for sid in stale:
+            PULSAR_SESSIONS.pop(sid, None)
+
+
+def _get_pulsar_session(session_id):
+    if not session_id:
+        return {"memory": {}, "last_results": [], "last_query": "", "last_seen": time.time()}
+    _purge_pulsar_sessions()
+    with SESSION_LOCK:
+        state = PULSAR_SESSIONS.setdefault(session_id, {
+            "memory": {},
+            "last_results": [],
+            "last_query": "",
+            "last_seen": time.time(),
+        })
+        state["last_seen"] = time.time()
+        return state
+
+
+def _session_memory(session_id):
+    return _get_pulsar_session(session_id).setdefault("memory", {})
+
+
+def _session_set(session_id, key, value):
+    if not session_id:
+        return
+    state = _get_pulsar_session(session_id)
+    with SESSION_LOCK:
+        state["memory"][key] = value
+
+
+def _session_clear(session_id):
+    if not session_id:
+        return
+    with SESSION_LOCK:
+        PULSAR_SESSIONS.pop(session_id, None)
+
 
 def get_user_memory(user_id):
+    # Pulsar now treats the browser's session id as session-scoped memory.
+    # Legacy persistent memory is retained only for callers that explicitly use a legacy id.
+    if user_id and str(user_id).startswith("pulsar_session_"):
+        return dict(_session_memory(user_id))
     if not user_id:
         return {}
-    if user_id in USER_MEMORIES:
-        return USER_MEMORIES[user_id]
-        
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT pref_key, pref_value FROM user_memory WHERE user_id = ?", (user_id,))
-    rows = c.fetchall()
-    conn.close()
-    
-    mem = {k: v for k, v in rows}
-    USER_MEMORIES[user_id] = mem
-    return mem
+    try:
+        c.execute("SELECT pref_key, pref_value FROM user_memory WHERE user_id = ?", (user_id,))
+        rows = c.fetchall()
+    except sqlite3.Error:
+        rows = []
+    finally:
+        conn.close()
+    return {k: v for k, v in rows}
+
 
 def set_user_memory(user_id, key, val):
     if not user_id:
         return
-    mem = get_user_memory(user_id)
-    mem[key] = val
-    USER_MEMORIES[user_id] = mem
-    
+    if str(user_id).startswith("pulsar_session_"):
+        _session_set(user_id, key, val)
+        return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("""
-        INSERT OR REPLACE INTO user_memory (user_id, pref_key, pref_value, updated_at)
-        VALUES (?, ?, ?, ?)
-    """, (user_id, key, val, datetime.now(timezone.utc).isoformat()))
-    conn.commit()
-    conn.close()
+    try:
+        c.execute("""
+            INSERT OR REPLACE INTO user_memory (user_id, pref_key, pref_value, updated_at)
+            VALUES (?, ?, ?, ?)
+        """, (user_id, key, val, datetime.now(timezone.utc).isoformat()))
+        conn.commit()
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+
 
 def clear_user_memory(user_id):
     if not user_id:
         return
-    USER_MEMORIES.pop(user_id, None)
+    if str(user_id).startswith("pulsar_session_"):
+        _session_clear(user_id)
+        return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("DELETE FROM user_memory WHERE user_id = ?", (user_id,))
-    conn.commit()
-    conn.close()
-
-
-
-# ---------------------------------------------------------------------------
-# Groq AI Completion (Strict 3.5s Timeout)
-# ---------------------------------------------------------------------------
-
-def call_groq_api(messages):
-    if not GROQ_API_KEY:
-        return None
-        
     try:
-        url = "https://api.groq.com/openai/v1/chat/completions"
-        system_prompt = (
-            "You are Pulsar, the Gaming-Focused AI Concierge for GamePulse AI. "
-            "You use live gaming sources when available, current Metacritic data across all years (1990–2026), user context, and saved gaming preferences to answer naturally. "
-            "Tone: enthusiastic, knowledgeable, accurate, concise, grounded in real Metacritic scores, platforms, and release years. "
-            "Use Markdown formatting with bolding, bullet points, and clean structure."
-        )
-        groq_messages = [{"role": "system", "content": system_prompt}]
-        for m in messages[-10:]:
-            groq_messages.append({"role": m.get("role", "user"), "content": m.get("content", "")})
-            
-        payload = {
-            "model": GROQ_MODEL,
-            "messages": groq_messages,
-            "temperature": 0.5,
-            "max_tokens": 1000
-        }
-        data = json.dumps(payload).encode("utf-8")
+        c.execute("DELETE FROM user_memory WHERE user_id = ?", (user_id,))
+        conn.commit()
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+
+
+def _dedupe_preserve(values):
+    out = []
+    seen = set()
+    for value in values:
+        value = str(value).strip()
+        if value and value.lower() not in seen:
+            seen.add(value.lower())
+            out.append(value)
+    return out
+
+
+def _memory_add(session_id, key, values):
+    if not values:
+        return
+    mem = _session_memory(session_id)
+    existing = mem.get(key, [])
+    if not isinstance(existing, list):
+        existing = [existing]
+    _session_set(session_id, key, _dedupe_preserve(existing + values))
+
+
+def _extract_preferences(text):
+    low = text.lower()
+    changes = {}
+
+    platforms = []
+    for canonical, aliases in PLATFORM_ALIASES.items():
+        if any(re.search(r"\b" + re.escape(alias) + r"\b", low) for alias in aliases):
+            platforms.append(canonical)
+    if platforms and any(k in low for k in ["i play", "play on", "i use", "i own", "my platform", "i prefer", "main platform", "mostly play", "remember"]):
+        changes["platforms"] = platforms
+
+    genres = []
+    for canonical, aliases in GENRE_ALIASES.items():
+        if any(alias in low for alias in aliases):
+            genres.append(canonical)
+    if genres and any(k in low for k in ["i like", "i love", "i enjoy", "favorite", "favourite", "i prefer", "remember"]):
+        changes["favorite_genres"] = genres
+
+    disliked_genres = []
+    if any(k in low for k in ["i hate", "i dislike", "i don't like", "i dont like", "avoid", "not a fan"]):
+        for canonical, aliases in GENRE_ALIASES.items():
+            if any(alias in low for alias in aliases):
+                disliked_genres.append(canonical)
+    if disliked_genres:
+        changes["disliked_genres"] = disliked_genres
+
+    if re.search(r"\b(single[- ]player|singleplayer)\b", low):
+        if any(k in low for k in ["prefer", "like", "love", "mostly", "play", "remember"]):
+            changes["playstyle"] = "single-player"
+    elif re.search(r"\b(co[- ]?op|cooperative)\b", low):
+        if any(k in low for k in ["prefer", "like", "love", "mostly", "play", "remember"]):
+            changes["playstyle"] = "co-op"
+    elif re.search(r"\b(multiplayer|competitive)\b", low):
+        if any(k in low for k in ["prefer", "like", "love", "mostly", "play", "remember"]):
+            changes["playstyle"] = "multiplayer/competitive"
+
+    if "no spoilers" in low or "without spoilers" in low:
+        changes["spoilers"] = "avoid spoilers"
+    elif "spoilers are fine" in low or "spoilers okay" in low or "spoil it" in low:
+        changes["spoilers"] = "spoilers allowed"
+
+    # Save specific game likes/dislikes only when the title resolves to a known game.
+    if any(k in low for k in ["favorite game", "favourite game", "i love ", "i like ", "games i love"]):
+        candidates = re.split(r"(?:favorite game is|favourite game is|i love|i like|games i love)", text, flags=re.I)
+        if len(candidates) > 1:
+            candidate = re.split(r"[.!?,;]| and ", candidates[-1], maxsplit=1)[0].strip()
+            if candidate:
+                game = find_game_across_databases(candidate)
+                if game and candidate.lower() in game["title"].lower() or (game and game["title"].lower() in candidate.lower()):
+                    changes["favorite_games"] = [game["title"]]
+
+    if any(k in low for k in ["hate", "dislike", "don't like", "dont like", "avoid"]):
+        candidates = re.split(r"(?:i hate|i dislike|i don't like|i dont like|avoid)", text, flags=re.I)
+        if len(candidates) > 1:
+            candidate = re.split(r"[.!?,;]", candidates[-1], maxsplit=1)[0].strip()
+            if candidate:
+                game = find_game_across_databases(candidate)
+                if game and (candidate.lower() in game["title"].lower() or game["title"].lower() in candidate.lower()):
+                    changes["disliked_games"] = [game["title"]]
+
+    return changes
+
+
+def _apply_preferences(session_id, changes):
+    for key, value in changes.items():
+        if isinstance(value, list):
+            _memory_add(session_id, key, value)
+        else:
+            _session_set(session_id, key, value)
+
+
+def _memory_summary(mem):
+    if not mem:
+        return "No gaming preferences have been captured in this session."
+    parts = []
+    for key, value in mem.items():
+        label = key.replace("_", " ").title()
+        if isinstance(value, list):
+            value = ", ".join(value)
+        parts.append(f"- {label}: {value}")
+    return "\n".join(parts)
+
+
+def _metacritic_year_url(year, platform=None):
+    if platform:
+        slug = METACRITIC_PLATFORM_SLUGS.get(platform.lower())
+        if slug:
+            return f"https://www.metacritic.com/browse/game/{slug}/all/{year}/"
+    return f"https://www.metacritic.com/browse/game/all/all/{year}/"
+
+
+def _metacritic_current_url():
+    return "https://www.metacritic.com/browse/game/all/all/current-year/?page=1"
+
+
+def _metacritic_all_time_url():
+    return "https://www.metacritic.com/browse/game/all/all/all-time/metascore/?page=1"
+
+
+def _metacritic_game_url(title):
+    # Best-effort slug for links; factual claims only use verified local/live scores.
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return f"https://www.metacritic.com/game/{slug}/"
+
+
+class _MetaTextParser(ET.Element):
+    pass
+
+
+def _fetch_metacritic_html(url, timeout=1.8):
+    cache_key = url
+    now = time.time()
+    with METACRITIC_CACHE_LOCK:
+        cached = METACRITIC_CACHE.get(cache_key)
+        if cached and now - cached["ts"] < METACRITIC_CACHE_TTL:
+            return cached["value"]
+    try:
         req = urllib.request.Request(
             url,
-            data=data,
             headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json",
-                "User-Agent": "GamePulseAI/2.0"
-            }
+                "User-Agent": "Mozilla/5.0 GamePulseAI/3.0 (compatible; GamePulse/3.0)",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.8",
+            },
         )
-        with urllib.request.urlopen(req, timeout=3.5) as response:
-            res_data = json.loads(response.read().decode("utf-8"))
-            return res_data["choices"][0]["message"]["content"].strip()
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            raw = response.read(900_000)
+        value = raw.decode("utf-8", errors="ignore")
     except Exception:
-        return None
+        value = None
+    with METACRITIC_CACHE_LOCK:
+        METACRITIC_CACHE[cache_key] = {"ts": now, "value": value}
+    return value
 
-# ---------------------------------------------------------------------------
-# Specialized Leaderboard & Year Response Generators
-# ---------------------------------------------------------------------------
+
+def _html_to_text(raw_html):
+    if not raw_html:
+        return ""
+    # Keep the dependency footprint at zero: strip scripts/styles first, then tags.
+    cleaned = re.sub(r"<script[^>]*>.*?</script>", " ", raw_html, flags=re.I | re.S)
+    cleaned = re.sub(r"<style[^>]*>.*?</style>", " ", cleaned, flags=re.I | re.S)
+    cleaned = re.sub(r"<br\s*/?>", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"</(?:div|li|p|h1|h2|h3|section|article|a|span|main)>", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.strip()
+
+
+def _parse_metacritic_rankings(raw_html, limit=10):
+    text = _html_to_text(raw_html)
+    if not text:
+        return []
+    date_pattern = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}"
+    matches = list(re.finditer(rf"\b(\d+)\.\s+(.+?)\s+({date_pattern})", text))
+    out = []
+    seen = set()
+    for idx, m in enumerate(matches):
+        rank = int(m.group(1))
+        if rank > 200:
+            continue
+        title = re.sub(r"\s+", " ", m.group(2)).strip(" •|-")
+        if not title or len(title) > 140:
+            continue
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else min(len(text), m.end() + 1200)
+        segment = text[m.end():end]
+        score_match = re.search(r"\b(100|[1-9]\d)\s+Metascore\b", segment)
+        if not score_match:
+            continue
+        score = int(score_match.group(1))
+        key = title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"rank": rank, "title": title, "score": score})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def fetch_metacritic_year(year, platform=None, limit=10):
+    url = _metacritic_year_url(year, platform)
+    raw = _fetch_metacritic_html(url)
+    parsed = _parse_metacritic_rankings(raw, limit=limit)
+    if not parsed:
+        return [], False, url
+    return parsed, True, url
+
+
+def fetch_metacritic_current(limit=10):
+    url = _metacritic_current_url()
+    raw = _fetch_metacritic_html(url)
+    parsed = _parse_metacritic_rankings(raw, limit=limit)
+    return parsed, bool(parsed), url
+
+
+def fetch_metacritic_all_time(limit=10):
+    url = _metacritic_all_time_url()
+    raw = _fetch_metacritic_html(url)
+    parsed = _parse_metacritic_rankings(raw, limit=limit)
+    return parsed, bool(parsed), url
+
+
+def _local_year_games(year):
+    games = []
+    for g in ALL_YEARS_DATABASE.get(year, []):
+        item = dict(g)
+        item["year"] = year
+        games.append(item)
+    return sorted(games, key=lambda g: (-int(g.get("score") or 0), g.get("title", "").lower()))
+
+
+def _find_local_for_live_item(title, year=None):
+    target = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+    candidates = ALL_YEARS_DATABASE.get(year, []) if year in ALL_YEARS_DATABASE else []
+    for g in candidates:
+        gs = re.sub(r"[^a-z0-9]+", " ", g["title"].lower()).strip()
+        if target == gs or target in gs or gs in target:
+            item = dict(g)
+            item["year"] = year
+            return item
+    return None
+
+
+def _format_ranked_games(title, games, source_url, source_label, pref_platform=None, numbered=True):
+    lines = [f"🏆 **{title}**", ""]
+    lines.append(f"Source: [{source_label}]({source_url})")
+    lines.append("")
+    results = []
+    for i, g in enumerate(games[:10], 1):
+        if "score" not in g:
+            continue
+        local = g.get("local") or {}
+        platforms = g.get("platforms") or local.get("platforms") or ""
+        genre = g.get("genre") or local.get("genre") or ""
+        year = g.get("year") or local.get("year") or ""
+        desc = g.get("desc") or local.get("desc") or ""
+        label = f"{i}. " if numbered else ""
+        lines.append(f"**{label}{g['title']}** — **Metacritic {g['score']}/100**")
+        if year:
+            lines.append(f"- **Year:** {year}")
+        if platforms:
+            lines.append(f"- **Platforms:** {platforms}")
+        if genre:
+            lines.append(f"- **Genre:** {genre}")
+        if desc:
+            lines.append(f"- **Why it stands out:** {desc}")
+        if pref_platform and platforms and pref_platform.lower() in platforms.lower():
+            lines.append(f"- ⭐ Matches your **{pref_platform}** preference")
+        lines.append(f"- [Metacritic page]({_metacritic_game_url(g['title'])})")
+        lines.append("")
+        results.append(g["title"])
+    return "\n".join(lines).strip(), results
+
 
 def get_year_response(year, min_score=None, pref_platform=None):
-    if year in ALL_YEARS_DATABASE:
-        games = ALL_YEARS_DATABASE[year]
-    else:
-        # Pre-1990 fallback
-        if year < 1990:
-            return (
-                f"🏛️ **Retro Gaming History: Key Standouts from {year}**\n\n"
-                f"Modern review aggregators like Metacritic began tracking review scores in the mid-to-late 1990s. "
-                f"However, the historical landmarks and defining masterworks of **{year}** include:\n\n"
-                f"• **1985:** *Super Mario Bros.* (NES) • *Duck Hunt* (NES)\n"
-                f"• **1986:** *The Legend of Zelda* (NES) • *Metroid* (NES) • *Castlevania* (NES)\n"
-                f"• **1987:** *Mega Man* (NES) • *Final Fantasy* (NES) • *Street Fighter* (Arcade)\n"
-                f"• **1988:** *Super Mario Bros. 3* (NES) • *Mega Man 2* (NES)\n"
-                f"• **1989:** *Tetris* (Game Boy) • *Prince of Persia* (PC) • *SimCity* (PC)\n\n"
-                f"💡 *Ask me for verified Metacritic rankings for any year from **1990 to 2026**!*"
-            )
-        return f"I have verified Metacritic rankings for every single year from **1990 to 2026**. What year would you like to explore?"
+    if year > CURRENT_YEAR:
+        return (f"I don't have released Metacritic results for **{year}** because it is in the future. "
+                f"I won't invent a ranking. [Open Metacritic's current games page]({_metacritic_current_url()}).", [])
 
+    live, is_live, source_url = fetch_metacritic_year(year, pref_platform, limit=10)
+    if is_live:
+        games = []
+        for item in live:
+            if min_score and item["score"] < min_score:
+                continue
+            local = _find_local_for_live_item(item["title"], year)
+            enriched = dict(item)
+            enriched["year"] = year
+            if local:
+                enriched["local"] = local
+            games.append(enriched)
+        title = f"Top Metacritic Games of {year}"
+        if pref_platform:
+            title += f" for {pref_platform}"
+        response, results = _format_ranked_games(title, games[:5], source_url, "Metacritic", pref_platform)
+        return response, results
+
+    local_games = _local_year_games(year)
+    if pref_platform:
+        local_games = [g for g in local_games if any(a in g.get("platforms", "").lower() for a in PLATFORM_ALIASES.get(pref_platform.lower(), [pref_platform.lower()]))]
     if min_score:
-        filtered = [g for g in games if g["score"] >= min_score]
-        if not filtered:
-            filtered = games
-    else:
-        filtered = games
+        local_games = [g for g in local_games if int(g.get("score") or 0) >= min_score]
+    if local_games:
+        response, results = _format_ranked_games(
+            f"Top Indexed Metacritic Games of {year}" + (f" for {pref_platform}" if pref_platform else ""),
+            local_games[:5],
+            _metacritic_year_url(year, pref_platform),
+            "Metacritic year ranking",
+            pref_platform,
+        )
+        return response + "\n\n*Live Metacritic retrieval was unavailable, so these results come from GamePulse's indexed historical dataset. I have not labeled them as live.*", results
 
-    res = f"🏆 **Top Metacritic Ranked Video Games of {year}**\n\n"
-    res += f"Here are the highest-rated games of **{year}**, verified by **Metacritic** scores and historical critical consensus:\n\n"
-    for i, g in enumerate(filtered[:5], 1):
-        plat_str = g['platforms']
-        pref_badge = f" ⭐ *({pref_platform})*" if pref_platform and pref_platform.lower() in plat_str.lower() else ""
-        res += f"**{i}. {g['title']}** ({plat_str} — **Metacritic {g['score']}**){pref_badge}\n"
-        res += f"- **Genre:** {g['genre']}\n"
-        res += f"- **Why It's Essential:** {g['desc']}\n\n"
+    if 1984 <= year <= CURRENT_YEAR:
+        return (f"I couldn't retrieve a verified ranking for **{year}** right now, so I won't make one up. "
+                f"You can verify the year directly on [Metacritic]({_metacritic_year_url(year, pref_platform)}).", [])
+    return (f"I don't have a verified gaming dataset for **{year}**. I won't invent scores or rankings.", [])
 
-    res += f"💡 *Would you like details on any of these (e.g. 'tell me more about #1'), to compare titles, or to check another year (e.g., 1998, 2004, or 2023)?*"
-    return res
+
+def get_period_response(start_year, end_year, pref_platform=None):
+    start_year = max(1984, start_year)
+    end_year = min(CURRENT_YEAR, end_year)
+    if start_year > end_year:
+        return "That year range is not valid.", []
+
+    # Use cached/live yearly pages in parallel. This keeps the first request bounded while
+    # subsequent requests are effectively instant from the 10-minute cache.
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        years = list(range(start_year, end_year + 1))
+        gathered = []
+        with ThreadPoolExecutor(max_workers=min(6, len(years))) as executor:
+            future_map = {executor.submit(fetch_metacritic_year, y, pref_platform, 10): y for y in years}
+            for fut in as_completed(future_map):
+                y = future_map[fut]
+                try:
+                    ranked, live, url = fut.result()
+                except Exception:
+                    ranked, live, url = [], False, _metacritic_year_url(y, pref_platform)
+                if live:
+                    for item in ranked:
+                        local = _find_local_for_live_item(item["title"], y)
+                        e = dict(item)
+                        e["year"] = y
+                        if local:
+                            e["local"] = local
+                        gathered.append(e)
+    except Exception:
+        gathered = []
+
+    if not gathered:
+        for y in range(start_year, end_year + 1):
+            for g in _local_year_games(y):
+                gathered.append(dict(g, year=y))
+
+    deduped = {}
+    for g in sorted(gathered, key=lambda x: (-int(x.get("score") or 0), int(x.get("year") or 0), x.get("title", "").lower())):
+        key = g["title"].lower()
+        deduped.setdefault(key, g)
+    games = list(deduped.values())[:10]
+    source_url = _metacritic_year_url(end_year, pref_platform)
+    return _format_ranked_games(f"Highest-Rated Games from {start_year}–{end_year}", games, source_url, "Metacritic", pref_platform)
+
 
 def format_decade_response(pref_platform=None):
-    decade_games = []
-    for y in range(2016, 2027):
-        if y in ALL_YEARS_DATABASE:
-            for g in ALL_YEARS_DATABASE[y]:
-                item = dict(g)
-                item["year"] = y
-                decade_games.append(item)
+    return get_period_response(CURRENT_YEAR - 9, CURRENT_YEAR, pref_platform)
 
-    sorted_decade = sorted(decade_games, key=lambda x: (x["score"] if x["score"] is not None else 0), reverse=True)
-    seen = set()
-    deduped = []
-    for g in sorted_decade:
-        if g["title"] not in seen:
-            seen.add(g["title"])
-            deduped.append(g)
-
-    res = "🏆 **Best Rated Video Games of the Last Decade (2016–2026)**\n\n"
-    res += "Here are the defining critical masterpieces of the past ten years, ranked by verified **Metacritic / OpenCritic** consensus:\n\n"
-    
-    res += "### 🌟 The Critical Titans (Scores 96–97)\n\n"
-    titans = [g for g in deduped if g["score"] and g["score"] >= 96][:6]
-    for i, g in enumerate(titans, 1):
-        plat_str = g['platforms']
-        if pref_platform and pref_platform.lower() in plat_str.lower():
-            plat_str += f" ⭐ *(Available on your {pref_platform})*"
-        res += f"**{i}. {g['title']}** ({g['year']}) — **Metacritic {g['score']}**\n"
-        res += f"- **Platforms:** {plat_str} • **Genre:** {g['genre']}\n"
-        res += f"- **Why It Defined the Decade:** {g['desc']}\n\n"
-
-    res += "### 💎 Modern Masterpieces (Scores 93–95)\n\n"
-    masterpieces = [g for g in deduped if g["score"] and 93 <= g["score"] < 96][:6]
-    for i, g in enumerate(masterpieces, len(titans) + 1):
-        plat_str = g['platforms']
-        if pref_platform and pref_platform.lower() in plat_str.lower():
-            plat_str += f" ⭐ *(Available on your {pref_platform})*"
-        res += f"**{i}. {g['title']}** ({g['year']}) — **Metacritic {g['score']}**\n"
-        res += f"- **Platforms:** {plat_str} • **Genre:** {g['genre']}\n"
-        res += f"- {g['desc']}\n\n"
-
-    res += "### 📅 Year-by-Year Standouts (2016 – 2026)\n"
-    for y in range(2016, 2027):
-        if y in ALL_YEARS_DATABASE:
-            top_two = ALL_YEARS_DATABASE[y][:2]
-            line_items = [f"*{g['title']}* ({g['score']})" for g in top_two]
-            res += f"• **{y}:** {' • '.join(line_items)}\n"
-
-    res += "\n💡 *Ask me to filter by any specific platform (PS5, PC, Switch, Xbox) or compare any two titles (e.g., 'Elden Ring vs Baldur\'s Gate 3')!*"
-    return res
 
 def format_all_time_response(pref_platform=None):
-    all_games = []
-    for y, games in ALL_YEARS_DATABASE.items():
-        for g in games:
-            item = dict(g)
-            item["year"] = y
-            all_games.append(item)
+    live, is_live, url = fetch_metacritic_all_time(limit=10)
+    if is_live:
+        games = []
+        for item in live:
+            # Try to recover local metadata for the year without ever inventing a score.
+            local = find_game_across_databases(item["title"])
+            enriched = dict(item)
+            if local:
+                enriched["local"] = local
+                enriched["year"] = local.get("year")
+            games.append(enriched)
+        return _format_ranked_games("Highest-Rated Video Games of All Time", games, url, "Metacritic", pref_platform)
 
-    sorted_all = sorted(all_games, key=lambda x: (x["score"] if x["score"] is not None else 0), reverse=True)
+    all_games = []
+    for year, games in ALL_YEARS_DATABASE.items():
+        for g in games:
+            all_games.append(dict(g, year=year))
+    if pref_platform:
+        all_games = [g for g in all_games if any(a in g.get("platforms", "").lower() for a in PLATFORM_ALIASES.get(pref_platform.lower(), [pref_platform.lower()]))]
+    all_games.sort(key=lambda g: (-int(g.get("score") or 0), g.get("title", "").lower()))
     seen = set()
     deduped = []
-    for g in sorted_all:
-        if g["title"] not in seen:
-            seen.add(g["title"])
+    for g in all_games:
+        if g["title"].lower() not in seen:
+            seen.add(g["title"].lower())
             deduped.append(g)
+    return _format_ranked_games(
+        "Highest-Rated Indexed Video Games of All Time",
+        deduped[:10],
+        url,
+        "Metacritic all-time rankings",
+        pref_platform,
+    )
 
-    res = "👑 **Highest-Rated Video Games of All Time (Metacritic Consensus)**\n\n"
-    res += "Here are the supreme critical benchmarks across the entire history of video game aggregation:\n\n"
-    for i, g in enumerate(deduped[:10], 1):
-        plat_str = g['platforms']
-        pref_badge = f" ⭐ *({pref_platform})*" if pref_platform and pref_platform.lower() in plat_str.lower() else ""
-        res += f"**{i}. {g['title']}** ({g['year']} — **Metacritic {g['score']}**){pref_badge}\n"
-        res += f"- **Platforms:** {plat_str} • **Genre:** {g['genre']}\n"
-        res += f"- {g['desc']}\n\n"
-
-    res += "💡 *Ask me about any specific year (e.g., 'best game from 1999', 'best of 2004') or genre to dive deeper!*"
-    return res
 
 def find_game_across_databases(name):
-    name_clean = name.strip().lower()
-    for y, games in ALL_YEARS_DATABASE.items():
+    """Factual game resolution against the app's indexed catalogue only.
+    Exact and high-confidence fuzzy matches are allowed; otherwise return None.
+    """
+    name_clean = re.sub(r"\s+", " ", str(name).strip().lower())
+    if not name_clean:
+        return None
+    # Exact match first.
+    for year, games in ALL_YEARS_DATABASE.items():
         for g in games:
-            if name_clean == g["title"].lower():
-                item = dict(g)
-                item["year"] = y
-                return item
-    for y, games in ALL_YEARS_DATABASE.items():
+            if name_clean == g["title"].strip().lower():
+                return dict(g, year=year)
+    # Obvious contained title match for natural-language requests.
+    for year, games in ALL_YEARS_DATABASE.items():
         for g in games:
-            if name_clean in g["title"].lower():
-                item = dict(g)
-                item["year"] = y
-                return item
-    best_match = None
-    best_ratio = 0.60
-    for y, games in ALL_YEARS_DATABASE.items():
+            title_clean = g["title"].strip().lower()
+            if len(name_clean) >= 5 and (name_clean in title_clean or title_clean in name_clean):
+                return dict(g, year=year)
+    # Conservative fuzzy matching; never use a low-confidence match for factual claims.
+    best = None
+    best_ratio = 0.86
+    for year, games in ALL_YEARS_DATABASE.items():
         for g in games:
             ratio = difflib.SequenceMatcher(None, name_clean, g["title"].lower()).ratio()
             if ratio > best_ratio:
                 best_ratio = ratio
-                best_match = dict(g)
-                best_match["year"] = y
-    return best_match
+                best = dict(g, year=year)
+    return best
+
+
+def _find_explicit_game_in_text(text):
+    low = text.lower()
+    titles = []
+    for year, games in ALL_YEARS_DATABASE.items():
+        for g in games:
+            titles.append((len(g["title"]), g["title"], year, g))
+    # Longest titles first prevents "Half-Life" from winning when the user asked about "Half-Life 2".
+    for _, title, year, g in sorted(titles, reverse=True):
+        if re.search(r"(?<![a-z0-9])" + re.escape(title.lower()) + r"(?![a-z0-9])", low):
+            return dict(g, year=year)
+    return None
+
+
+def _extract_platform(text):
+    low = text.lower()
+    for canonical, aliases in PLATFORM_ALIASES.items():
+        if any(re.search(r"\b" + re.escape(alias) + r"\b", low) for alias in aliases):
+            return canonical
+    return None
+
+
+def _extract_year(text):
+    years = [int(y) for y in re.findall(r"\b(19\d{2}|20\d{2})\b", text)]
+    return years[0] if years else None
+
+
+def _extract_year_range(text):
+    m = re.search(r"\b(19\d{2}|20\d{2})\s*(?:-|–|—|to|through)\s*(19\d{2}|20\d{2})\b", text.lower())
+    if not m:
+        m = re.search(r"\b(19\d{2}|20\d{2})s\b", text.lower())
+        if m:
+            y = int(m.group(1))
+            return y, y + 9
+        return None
+    a, b = int(m.group(1)), int(m.group(2))
+    return (min(a, b), max(a, b))
+
+
+def _extract_score_floor(text):
+    m = re.search(r"\b(?:score|rated|rating)?\s*(\d{2})\s*\+", text.lower())
+    return int(m.group(1)) if m else None
+
+
+def _is_year_ranking_query(text):
+    low = text.lower()
+    return bool(re.search(r"\b(best|top|highest rated|highest-rated|rankings?|metacritic|scores?)\b", low))
+
+
+def _last_titles_from_history(history, state):
+    titles = state.get("last_results", []) if state else []
+    if titles:
+        return titles
+    for msg in reversed(history):
+        if msg.get("role") != "assistant":
+            continue
+        names = re.findall(r"\*\*(?:\d+\.\s*)?([^*]+?)\*\*", msg.get("content", ""))
+        if names:
+            return [n.strip() for n in names[:10]]
+    return []
+
+
+def _recommend_from_preferences(text, mem):
+    low = text.lower()
+    target_platform = _extract_platform(text) or (mem.get("platforms") or [None])[0]
+    favorite_genres = mem.get("favorite_genres") or []
+    disliked_genres = mem.get("disliked_genres") or []
+
+    # First try the archetype catalog because it already contains curated gaming DNA.
+    candidates = []
+    for arch in ALL_ARCHETYPES:
+        score = 0
+        keywords = arch.get("keywords", [])
+        if any(k in low for k in keywords):
+            score += 5
+        for genre in favorite_genres:
+            if genre in arch.get("title", "").lower() or genre in arch.get("description", "").lower():
+                score += 2
+        if score:
+            for g in arch.get("games", []):
+                candidates.append((score, g, arch))
+    if not candidates:
+        return None, []
+
+    ranked = []
+    for base_score, game, arch in candidates:
+        if target_platform and not any(target_platform.lower() in p.lower() or any(a in p.lower() for a in PLATFORM_ALIASES.get(target_platform, [])) for p in game.get("platforms", [])):
+            base_score -= 3
+        if any(d in game.get("desc", "").lower() or d in arch.get("title", "").lower() for d in disliked_genres):
+            base_score -= 5
+        ranked.append((base_score, game, arch))
+    ranked.sort(key=lambda x: (-x[0], -int(x[1].get("score", 0))))
+
+    lines = ["🎮 **Pulsar Recommendations Based on Your Current Preferences**", ""]
+    if target_platform:
+        lines.append(f"**Platform:** {target_platform.upper()}")
+    if favorite_genres:
+        lines.append(f"**Genres you like:** {', '.join(favorite_genres)}")
+    if disliked_genres:
+        lines.append(f"**Genres to avoid:** {', '.join(disliked_genres)}")
+    lines.append("")
+    results = []
+    for i, (_, g, arch) in enumerate(ranked[:5], 1):
+        lines.append(f"**{i}. {g['title']}** — **Metacritic {g['score']}**")
+        lines.append(f"- **Genre:** {arch['title']}")
+        lines.append(f"- **Platforms:** {', '.join(g['platforms'])}")
+        lines.append(f"- {g['desc']}")
+        lines.append("")
+        results.append(g["title"])
+    return "\n".join(lines), results
+
+
+def _game_response(game, user_text, session_memory):
+    title = game["title"]
+    lines = [f"🎮 **{title}**", ""]
+    lines.append(f"- **Metacritic:** **{game.get('score', 'N/A')}/100**")
+    lines.append(f"- **Release year:** {game.get('year', 'N/A')}")
+    lines.append(f"- **Platforms:** {game.get('platforms', 'N/A')}")
+    lines.append(f"- **Genre:** {game.get('genre', 'N/A')}")
+    lines.append(f"- **Overview:** {game.get('desc', 'No verified local overview is available.')}")
+    lines.append(f"- [Metacritic page]({_metacritic_game_url(title)})")
+
+    reviews = get_articles(search=title, limit=5)
+    if reviews:
+        lines.append("")
+        lines.append("**Relevant GamePulse coverage:**")
+        for r in reviews[:3]:
+            lines.append(f"- [{r['title']}]({r['link']}) — {r['source']} ({r['published']})")
+    return "\n".join(lines), [title]
+
+
+def _comparison_response(a, b):
+    lines = [f"⚔️ **{a['title']} vs. {b['title']}**", "", "| Metric | First game | Second game |", "|---|---|---|",
+             f"| Metacritic | **{a.get('score', 'N/A')}** | **{b.get('score', 'N/A')}** |",
+             f"| Year | {a.get('year', 'N/A')} | {b.get('year', 'N/A')} |",
+             f"| Genre | {a.get('genre', 'N/A')} | {b.get('genre', 'N/A')} |",
+             f"| Platforms | {a.get('platforms', 'N/A')} | {b.get('platforms', 'N/A')} |", "",
+             f"**{a['title']}:** {a.get('desc', '')}",
+             f"**{b['title']}:** {b.get('desc', '')}", "",
+             f"[Metacritic — {a['title']}]({_metacritic_game_url(a['title'])}) · [Metacritic — {b['title']}]({_metacritic_game_url(b['title'])})"]
+    return "\n".join(lines), [a["title"], b["title"]]
+
+
+# ---------------------------------------------------------------------------
+# Grounded Groq Completion — only after deterministic fact retrieval
+# ---------------------------------------------------------------------------
+
+def call_groq_api(messages, memory=None, grounded_context=""):
+    if not GROQ_API_KEY:
+        return None
+    try:
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        system_prompt = (
+            "You are Pulsar, a gaming-only AI concierge. Answer naturally and quickly. "
+            "Do not invent Metacritic scores, review dates, release dates, platforms, games, or citations. "
+            "When the supplied facts do not support a claim, say that the data is unavailable rather than guessing. "
+            "Use the supplied grounded context as the factual source of truth. User preferences are session-scoped. "
+            "You may provide general gaming explanations, but never present uncertain specifics as fact. "
+            "Do not repeat the same response verbatim when a follow-up changes the question. "
+            "Be concise unless the user asks for detail. Use Markdown.\n\n"
+            f"SESSION MEMORY:\n{_memory_summary(memory or {})}\n\n"
+            f"GROUNDED DATA:\n{grounded_context[:12000]}"
+        )
+        groq_messages = [{"role": "system", "content": system_prompt}]
+        for m in messages[-8:]:
+            role = m.get("role", "user")
+            if role not in {"user", "assistant"}:
+                continue
+            groq_messages.append({"role": role, "content": str(m.get("content", ""))[:5000]})
+        payload = {
+            "model": GROQ_MODEL,
+            "messages": groq_messages,
+            "temperature": 0.2,
+            "max_tokens": 650,
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+                "User-Agent": "GamePulseAI/3.0",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=2.2) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        reply = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        return reply or None
+    except Exception:
+        return None
+
 
 def handle_pulsar_chat(messages, user_id=None):
     if not messages:
-        return (
-            "Hi! I'm Pulsar, your Gaming-Focused AI.\n"
-            "I use live gaming sources when available, current Metacritic data across all years (1990–2026), your chat context, and saved gaming preferences to answer naturally.\n"
-            "Ask for any game review, rankings for any year (e.g., *'best game from 1999'*), decade comparisons, platform-tailored suggestions, or follow-ups."
-        )
-        
-    current_msg = messages[-1].get("content", "").strip()
+        return ("Hi! I'm Pulsar, your Gaming-Focused AI. Ask me about any game, any release year, rankings, comparisons, reviews, recommendations, current gaming news, or your session preferences.", [])
+
+    session_id = user_id or "pulsar_session_anonymous"
+    state = _get_pulsar_session(session_id)
+    current_msg = str(messages[-1].get("content", "")).strip()
     history = messages[:-1]
     lower_q = current_msg.lower()
-    clean_q = current_msg
-    
-    # 0. User & Session Memory Context
-    mem = get_user_memory(user_id) if user_id else {}
-    user_pref_platform = mem.get("platform")
-    
-    # Memory Command: Save Preference
-    if any(k in lower_q for k in ["remember that", "my main platform is", "i play on", "i have a", "my preferred platform is", "i mainly play on"]):
-        plat_found = None
-        for p in ["PS5", "PC", "Xbox", "Switch", "Steam Deck", "PS4"]:
-            if p.lower() in lower_q:
-                plat_found = p
-                break
-        genre_found = None
-        for g in ["rpg", "jrpg", "crpg", "action rpg", "soulslike", "fps", "platformer", "horror", "strategy", "roguelike", "deckbuilder"]:
-            if g in lower_q:
-                genre_found = g.upper()
-                break
+    mem = _session_memory(session_id)
 
-        if plat_found:
-            set_user_memory(user_id, "platform", plat_found)
-        if genre_found:
-            set_user_memory(user_id, "favorite_genre", genre_found)
+    # Automatically retain relevant gaming preferences from normal conversation.
+    changes = _extract_preferences(current_msg)
+    _apply_preferences(session_id, changes)
+    mem = _session_memory(session_id)
 
-        if plat_found or genre_found:
-            msg_parts = []
-            if plat_found: msg_parts.append(f"primary platform: **{plat_found}**")
-            if genre_found: msg_parts.append(f"favorite genre: **{genre_found}**")
-            return f"💾 **Preference Saved:** I've remembered that your {', and '.join(msg_parts)}! I will automatically highlight and prioritize matching games in all your rankings and recommendations."
-            
-    if any(k in lower_q for k in ["forget my preferences", "clear memory", "reset preferences", "clear my preferences", "forget me"]):
-        clear_user_memory(user_id)
-        return "🧹 **Preferences Cleared:** I have reset your saved gaming preferences. All recommendations will be general and cross-platform."
-        
-    if any(k in lower_q for k in ["what do you remember", "my preferences", "what are my preferences", "show my preferences", "do you remember me"]):
-        if mem:
-            details = "\n".join([f"• **{k.replace('_', ' ').title()}:** {v}" for k, v in mem.items()])
-            return f"🧠 **Your Saved Gaming Preferences:**\n\n{details}\n\nYou can update these anytime (e.g., *'Remember that I play on PC'* or *'Forget my preferences'*)."
-        else:
-            return "🧠 I don't have any saved preferences for you yet. Tell me what platforms you play on (e.g., *'Remember that I play on PS5'*) or genres you love, and I'll remember them across your session!"
+    if any(k in lower_q for k in ["forget everything", "forget all", "clear memory", "reset preferences", "forget my preferences", "forget me"]):
+        _session_clear(session_id)
+        state = _get_pulsar_session(session_id)
+        return "🧹 **Session memory cleared.** I won't use previously stored gaming preferences for the rest of this session.", []
 
-    # 1. Conversational Ordinal / Follow-up Resolution (e.g., "tell me more about #1", "what was the second game")
-    ordinal_match = re.search(r'\b(?:tell me more about|more info on|details on|tell me about|what about)\s+(?:#|number\s+)?([1-5]|first|second|third|fourth|fifth)\b', lower_q)
-    if ordinal_match and history:
-        word_map = {"1": 1, "first": 1, "2": 2, "second": 2, "3": 3, "third": 3, "4": 4, "fourth": 4, "5": 5, "fifth": 5}
-        target_idx = word_map.get(ordinal_match.group(1).lower())
-        last_bot_msg = history[-1].get("content", "")
-        game_lines = re.findall(r'\*\*\d+\.\s+([^*]+)\*\*', last_bot_msg)
-        if game_lines and target_idx and 1 <= target_idx <= len(game_lines):
-            target_name = game_lines[target_idx - 1].strip()
-            g = find_game_across_databases(target_name)
-            if g:
-                res = f"🎮 **Deep Dive: {g['title']} ({g.get('year', '')})**\n\n"
-                res += f"• **Official Metacritic Score:** **{g['score']}** / 100\n"
-                res += f"• **Platforms:** {g['platforms']}\n"
-                res += f"• **Genre:** {g['genre']}\n\n"
-                res += f"**Critical Analysis & Gameplay:**\n{g['desc']}\n\n"
-                res += f"💡 *Want to compare {g['title']} to another game, or find modern games like it?*"
-                return res
+    if any(k in lower_q for k in ["what do you remember", "what do you know about me", "my preferences", "show my preferences", "remember me"]):
+        return f"🧠 **What Pulsar remembers in this session**\n\n{_memory_summary(mem)}", []
 
-    # 2. Follow-up Platform Filter (e.g., "which of those are on PC?", "are any on Switch?")
-    plat_target = None
-    for p in ["PS5", "PC", "Xbox", "Switch", "PS4", "PS1", "PS2", "Dreamcast", "N64", "GameCube", "Wii", "Steam"]:
-        if re.search(r'\b' + p.lower() + r'\b', lower_q):
-            plat_target = p
-            break
-            
-    is_filter_ask = any(k in lower_q for k in ["which", "are any", "any of", "filter by", "playable on", "available on", "what about", "on pc", "on ps5", "on switch", "on xbox"])
-    if plat_target and is_filter_ask and history:
-        check_plat = "pc" if plat_target.lower() == "steam" else plat_target.lower()
-        last_bot_msg = history[-1].get("content", "")
-        game_lines = re.findall(r'\*\*\d+\.\s+([^*]+)\*\*', last_bot_msg)
-        if game_lines:
-            matched_subset = []
-            for name in game_lines:
-                g = find_game_across_databases(name)
-                if g and check_plat in g["platforms"].lower():
-                    matched_subset.append(g)
-            if matched_subset:
-                res = f"🎮 **Games Available on {plat_target} from the Previous List:**\n\n"
-                for i, g in enumerate(matched_subset, 1):
-                    res += f"**{i}. {g['title']}** ({g.get('year', '')} — **Metacritic {g['score']}**)\n"
-                    res += f"- **Platforms:** {g['platforms']} • **Genre:** {g['genre']}\n"
-                    res += f"- **Why It's Essential:** {g['desc']}\n\n"
-                res += f"💡 *Would you like details on any of these, or to explore more games for {plat_target}?*"
-                return res
-            else:
-                return f"None of the titles from that specific list were released on **{plat_target}**. Would you like me to show the top-rated games released specifically for **{plat_target}** from that year or era instead?"
+    explicit_remember = any(k in lower_q for k in ["remember that", "remember i", "remember my"])
+    query_markers = ["best", "top", "recommend", "recommendation", "what", "which", "review", "score", "compare", "versus", " vs ", "latest", "news", "rank", "games like", "what should i play"]
+    memory_only = not any(k in lower_q for k in query_markers)
+    if explicit_remember and changes and memory_only:
+        return f"💾 **Saved for this Pulsar session.**\n\n{_memory_summary(mem)}", []
+    if changes and memory_only:
+        return f"🧠 **Got it — I’ll keep that in mind for this Pulsar session.**\n\n{_memory_summary(mem)}", []
 
-    # 3. Optional Groq AI Enhancement (with strict 3.5s timeout)
-    groq_reply = call_groq_api(messages)
-    if groq_reply:
-        return groq_reply
+    # Resolve conversational references against the server-side session's last list.
+    last_results = _last_titles_from_history(history, state)
+    ordinal_match = re.search(r"\b(?:tell me more about|more info on|details on|tell me about|what about)\s+(?:#|number\s+)?(\d+|first|second|third|fourth|fifth)\b", lower_q)
+    if ordinal_match and last_results:
+        idx_map = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
+        idx = idx_map.get(ordinal_match.group(1), int(ordinal_match.group(1)) if ordinal_match.group(1).isdigit() else 0)
+        if 1 <= idx <= len(last_results):
+            game = find_game_across_databases(last_results[idx - 1])
+            if game:
+                reply, results = _game_response(game, current_msg, mem)
+                state["last_results"] = results
+                return reply, results
 
-    # 4. Deterministic Local Intelligence Engine
-    
-    # A. ALL-YEARS LOOKUP (e.g., "best game from 1999", "top 5 games of 2004", "1998 games", "best of 1995")
-    year_match = re.search(r'\b(19[7-9][0-9]|20[0-2][0-9]|2030)\b', lower_q)
-    if year_match:
-        target_year = int(year_match.group(1))
-        score_match = re.search(r'(\b[6-9][0-9]\b)\s*(?:\+|plus|or more|or higher|rating|rated|score)?', lower_q)
-        min_score = int(score_match.group(1)) if score_match else None
-        return get_year_response(target_year, min_score=min_score, pref_platform=user_pref_platform)
+    # Pronoun-like follow-up: "what about that one on PC?" / "which of those are on Switch?"
+    platform = _extract_platform(current_msg)
+    is_filter = any(k in lower_q for k in ["which of those", "are any of those", "what about that one", "filter", "available on", "playable on", "on pc", "on switch", "on ps5", "on xbox"])
+    if platform and is_filter and last_results:
+        subset = []
+        for name in last_results:
+            g = find_game_across_databases(name)
+            if not g:
+                continue
+            aliases = PLATFORM_ALIASES.get(platform, [platform])
+            if any(alias in g.get("platforms", "").lower() for alias in aliases):
+                subset.append(g)
+        if subset:
+            lines = [f"🎮 **From the previous list, these are available on {platform.upper()}:**", ""]
+            results = []
+            for i, g in enumerate(subset, 1):
+                lines.append(f"**{i}. {g['title']}** — **Metacritic {g['score']}**")
+                lines.append(f"- {g['platforms']} • {g['genre']}")
+                lines.append("")
+                results.append(g["title"])
+            state["last_results"] = results
+            return "\n".join(lines), results
+        return f"None of the games in the previous list have a verified **{platform.upper()}** listing in my indexed data. I won't guess.", []
 
-    # B. DECADE RANKINGS & COMPARISONS
-    decade_terms = ["decade", "last 10 years", "past 10 years", "10 years", "decade comparisons", "best of the decade", "games of the decade"]
-    if any(t in lower_q for t in decade_terms) or (
-        ("best" in lower_q or "top" in lower_q or "highest" in lower_q) and 
-        ("rated" in lower_q or "score" in lower_q or "rankings" in lower_q or "games" in lower_q) and 
-        ("decade" in lower_q or "recent years" in lower_q)
-    ):
-        return format_decade_response(user_pref_platform)
-
-    # C. ALL-TIME HIGHEST RATED
-    if any(k in lower_q for k in ["all time", "highest rated games", "best games in history", "top games ever", "best games ever"]):
-        return format_all_time_response(user_pref_platform)
-
-    # D. ARTICLES POSTED TODAY / LATEST NEWS
-    if any(k in lower_q for k in ["articles posted today", "today's articles", "news today", "latest news", "today's news", "recent stories"]):
-        articles = get_articles(limit=5)
-        res = "📰 **Featured Stories & Reviews Today on GamePulse:**\n\n"
-        for i, a in enumerate(articles[:5], 1):
-            score_badge = f" [**{a['score']}**]" if a['score'] else ""
-            res += f"**{i}. [{a['title']}]({a['link']})**{score_badge}\n"
-            res += f"   *Source: {a['source']} • Tag: #{a['category']}*\n"
-            res += f"   _{a['summary'][:150]}..._\n\n"
-        res += "Explore any section using the tabs above, or ask me for in-depth reviews and scores!"
-        return res
-
-    # E. HEAD-TO-HEAD COMPARISON (e.g., "Elden Ring vs Baldur's Gate 3", "Soulcalibur vs Tekken")
-    vs_match = re.search(r"([A-Za-z0-9\s:\-\.]+?)\s+(?:vs\.?|versus|compared to|against)\s+([A-Za-z0-9\s:\-\.]+)", clean_q, re.I)
+    # Comparison must be resolved before broad year/platform routing.
+    vs_match = re.search(r"(.+?)\s+(?:vs\.?|versus|compared to|against)\s+(.+)", current_msg, flags=re.I)
     if vs_match:
-        name_a = vs_match.group(1).strip()
-        name_b = vs_match.group(2).strip()
-        ga = find_game_across_databases(name_a)
-        gb = find_game_across_databases(name_b)
-        if ga and gb:
-            res = f"⚔️ **Head-to-Head Comparison: {ga['title']} vs. {gb['title']}**\n\n"
-            res += f"| Metric | **{ga['title']}** | **{gb['title']}** |\n"
-            res += f"|---|---|---|\n"
-            res += f"| **Metacritic Score** | **{ga['score']}** / 100 | **{gb['score']}** / 100 |\n"
-            res += f"| **Release Year** | {ga.get('year', 'N/A')} | {gb.get('year', 'N/A')} |\n"
-            res += f"| **Genre** | {ga['genre']} | {gb['genre']} |\n"
-            res += f"| **Platforms** | {ga['platforms']} | {gb['platforms']} |\n\n"
-            res += f"**Key Takeaways:**\n"
-            res += f"• **{ga['title']}**: {ga['desc']}\n"
-            res += f"• **{gb['title']}**: {gb['desc']}\n\n"
-            res += f"💡 *Both are critical standouts. Which platform or playstyle do you prefer?*"
-            return res
+        a = find_game_across_databases(vs_match.group(1).strip())
+        b = find_game_across_databases(vs_match.group(2).strip())
+        if a and b:
+            reply, results = _comparison_response(a, b)
+            state["last_results"] = results
+            return reply, results
 
-    # F. SPECIFIC GAME REVIEW CHECKS
-    if ("fire emblem" in lower_q or "emblem" in lower_q) and ("review" in lower_q or "switch" in lower_q or "score" in lower_q or "how is" in lower_q or "how are" in lower_q):
-        return (
-            "⚔️ **Critical Reviews: Fire Emblem Series on Nintendo Switch & Switch 2**\n\n"
-            "The Fire Emblem franchise continues to be one of Nintendo's crown jewels for tactical strategy RPGs. Here is the review breakdown:\n\n"
-            "**1. Fire Emblem: Fortune's Weave (Nintendo Switch 2 — OpenCritic / Metacritic 88)**\n"
-            "- **Review Consensus:** Universal praise for leveraging Switch 2 hardware with locked 60FPS tactical battlefield rendering, lightning-fast loading between grid movement and combat animations, and vibrant docked output.\n"
-            "- **Key Strengths:** Perfect synthesis of *Three Houses*' political intrigue and social monastery system with the pristine tactical depth and Weapon Triangle mechanics of classic Fire Emblem.\n\n"
-            "**2. Fire Emblem: Three Houses (Nintendo Switch — Metacritic 89)**\n"
-            "- **Review Consensus:** Regarded as a modern masterpiece with 3 distinct faction story routes, rich time-management school life at Garreg Mach Monastery, and branching military tragedies.\n\n"
-            "**3. Fire Emblem Engage (Nintendo Switch — Metacritic 80)**\n"
-            "- **Review Consensus:** Applauded for having some of the crispest, most inventive turn-based combat and Emblem Ring fusion mechanics in franchise history.\n\n"
-            "💡 *Would you like tactical class build guides, or recommendations for other SRPGs like Triangle Strategy and Tactics Ogre?*"
-        )
+    # Year, year range, decade, and all-time rankings are deterministic and never handed to the LLM.
+    year_range = _extract_year_range(current_msg)
+    if year_range and _is_year_ranking_query(current_msg):
+        reply, results = get_period_response(year_range[0], year_range[1], platform)
+        state["last_results"] = results
+        return reply, results
 
-    # G. SHORT PLATFORM FOLLOW-UP
-    platforms_detected = []
-    if re.search(r'\b(ps5|playstation\s*5|playstation)\b', lower_q):
-        platforms_detected.append("PS5")
-    if re.search(r'\b(pc|steam|windows)\b', lower_q):
-        platforms_detected.append("PC")
-    if re.search(r'\b(xbox|series\s*x|series\s*s)\b', lower_q):
-        platforms_detected.append("Xbox")
-    if re.search(r'\b(switch|nintendo)\b', lower_q):
-        platforms_detected.append("Switch")
-        
-    is_short_platform_followup = len(clean_q.split()) <= 4 and len(platforms_detected) > 0
-    if is_short_platform_followup and history:
-        target_plat = platforms_detected[0]
-        recent_year = 2024
-        games_for_plat = [g for g in ALL_YEARS_DATABASE.get(recent_year, []) if target_plat.lower() in g["platforms"].lower()]
-        if not games_for_plat:
-            games_for_plat = [g for g in ALL_YEARS_DATABASE.get(2023, []) if target_plat.lower() in g["platforms"].lower()]
-            
-        res = f"🎮 **Top-Rated Recent Games for {target_plat}**\n\n"
-        for i, g in enumerate(games_for_plat[:5], 1):
-            res += f"**{i}. {g['title']}** (Metacritic **{g['score']}**)\n"
-            res += f"- **Genre:** {g['genre']}\n"
-            res += f"- {g['desc']}\n\n"
-        res += f"💡 *Need details on performance, download size, or multiplayer modes for any of these on {target_plat}? Let me know!*"
-        return res
+    year = _extract_year(current_msg)
+    if year and _is_year_ranking_query(current_msg):
+        min_score = _extract_score_floor(current_msg)
+        ranking_platform = platform if platform else (mem.get("platforms") or [None])[0] if any(k in lower_q for k in ["my platform", "my console", "for me", "on my"] ) else None
+        reply, results = get_year_response(year, min_score=min_score, pref_platform=ranking_platform)
+        state["last_results"] = results
+        return reply, results
 
-    # H. 32 ARCHETYPE MATCHER
-    best_arch = None
-    best_matches = 0
-    for arch in ALL_ARCHETYPES:
-        matches = 0
-        for kw in arch.get("keywords", []):
-            if kw in lower_q:
-                matches += len(kw.split()) + 1
-        if matches > best_matches:
-            best_matches = matches
-            best_arch = arch
-            
-    if best_arch and best_matches > 0:
-        res = f"{best_arch['icon']} **Top Recommendations: {best_arch['title']}**\n\n"
-        res += f"**Gameplay DNA & Style:**\n{best_arch['description']}\n\n"
-        res += f"### Definitive Critical Standouts:\n\n"
-        
-        games = best_arch.get("games", [])
-        if user_pref_platform:
-            games = sorted(games, key=lambda x: user_pref_platform.lower() in [p.lower() for p in x["platforms"]], reverse=True)
-            
-        for i, g in enumerate(games[:5], 1):
-            plat_str = ", ".join(g["platforms"])
-            pref_badge = f" ⭐ *({user_pref_platform})*" if user_pref_platform and user_pref_platform.lower() in [p.lower() for p in g["platforms"]] else ""
-            res += f"**{i}. {g['title']}** ({plat_str} — **Metacritic {g['score']}**, {g['year']}){pref_badge}\n"
-            res += f"- **Why You'll Love It:** {g['desc']}\n\n"
-            
-        res += f"Tell me your preferred platform (PC, PS5, Xbox, Switch) or whether you prefer faster combat or deeper narrative to narrow it down further!"
-        return res
+    if any(k in lower_q for k in ["last decade", "past decade", "best of the decade", "games of the decade", "last 10 years", "past 10 years"]):
+        ranking_platform = platform if platform else ((mem.get("platforms") or [None])[0] if any(k in lower_q for k in ["my platform", "my console", "for me", "on my"]) else None)
+        reply, results = format_decade_response(ranking_platform)
+        state["last_results"] = results
+        return reply, results
 
-    # I. UNIVERSAL GAME FALLBACK
-    like_match = re.search(r"(?:games like|similar to|i like|recommendations like|fans of)\s+([A-Za-z0-9\s:\-\.]+)", clean_q, re.I)
-    target_name = like_match.group(1).strip() if like_match else clean_q
-    
+    if any(k in lower_q for k in ["all time", "all-time", "best games ever", "top games ever", "highest rated games in history", "best games in history"]):
+        ranking_platform = platform if platform else ((mem.get("platforms") or [None])[0] if any(k in lower_q for k in ["my platform", "my console", "for me", "on my"]) else None)
+        reply, results = format_all_time_response(ranking_platform)
+        state["last_results"] = results
+        return reply, results
+
+    # Current-year / currently available rankings use Metacritic's live current-year page.
+    if any(k in lower_q for k in ["right now", "out right now", "best games this year", "highest rated this year", "best games of 2026", "current games"]):
+        live, live_ok, source_url = fetch_metacritic_current(limit=10)
+        if live_ok:
+            games = [{"title": x["title"], "score": x["score"], "year": CURRENT_YEAR} for x in live[:10]]
+            if platform:
+                # Current-year page can be filtered server-side on a subsequent request; use local data only as a preference signal here.
+                local = {g["title"].lower(): g for g in _local_year_games(CURRENT_YEAR)}
+                filtered = []
+                aliases = PLATFORM_ALIASES.get(platform, [platform])
+                for g in games:
+                    lg = local.get(g["title"].lower())
+                    if lg and any(a in lg.get("platforms", "").lower() for a in aliases):
+                        g["local"] = lg
+                        filtered.append(g)
+                games = filtered or games
+            reply, results = _format_ranked_games(f"Highest-Rated Games of {CURRENT_YEAR} Right Now", games[:5], source_url, "Metacritic", platform)
+            state["last_results"] = results
+            return reply, results
+        return f"I couldn't retrieve live Metacritic current-year data right now, so I won't present stale cached scores as current. [Open Metacritic's current-year rankings]({_metacritic_current_url()}).", []
+
+    # Direct game lookup/review against the indexed gaming catalogue.
+    game = _find_explicit_game_in_text(current_msg)
+
+    if not game:
+        # Only use fuzzy title resolution if the query contains an explicit game-intent phrase.
+        if any(k in lower_q for k in ["review ", "about ", "tell me about ", "how is ", "score for ", "metacritic score for ", "is "]):
+            candidate = re.sub(r"^(review|about|tell me about|how is|score for|metacritic score for|is)\s+", "", current_msg, flags=re.I).strip(" ?")
+            if candidate:
+                game = find_game_across_databases(candidate)
+
+    if game:
+        factual_metadata_terms = ["developer", "developed", "developer?", "publisher", "release date", "released", "metacritic", "score", "platform", "genre", "review", "about"]
+        # Only answer metadata questions that the indexed record actually contains. This keeps
+        # the no-hallucination guarantee stronger than a generic LLM fallback.
+        if any(term in lower_q for term in ["developer", "developed", "publisher", "release date", "when did", "who made"]):
+            return (f"I have the verified indexed facts for **{game['title']}** — its Metacritic score, year, platforms, genre, and overview — "
+                    "but developer/publisher metadata is not present in my grounded record, so I won't guess. "
+                    f"[Open its Metacritic page]({_metacritic_game_url(game['title'])}) for the authoritative details.", [game['title']])
+        reply, results = _game_response(game, current_msg, mem)
+        state["last_results"] = results
+        return reply, results
+
+    # Recommendations using current session preferences and the curated archetype catalogue.
+    if any(k in lower_q for k in ["recommend", "recommendations", "what should i play", "suggest a game", "games like", "similar to", "i like"]):
+        reply, results = _recommend_from_preferences(current_msg, mem)
+        if reply:
+            state["last_results"] = results
+            return reply, results
+
+    # Latest/current news is deterministic and grounded entirely in the app's feed DB.
+    if any(k in lower_q for k in ["latest news", "latest gaming news", "what's new", "whats new", "today's news", "recent gaming news", "recent stories", "articles posted today"]):
+        articles = get_articles(limit=8)
+        lines = ["📰 **Latest Gaming Coverage in GamePulse**", ""]
+        results = []
+        for i, article in enumerate(articles[:8], 1):
+            lines.append(f"**{i}. [{article['title']}]({article['link']})**")
+            lines.append(f"- {article['source']} • {article['published']} • #{article['category']}")
+            if article.get("summary"):
+                lines.append(f"- {article['summary'][:220]}")
+            lines.append("")
+            results.append(article["title"])
+        state["last_results"] = results
+        return "\n".join(lines), results
+
+    # Grounded natural-language fallback. The model receives only facts we have actually retrieved.
+    grounded = []
+    if mem:
+        grounded.append("SESSION MEMORY:\n" + _memory_summary(mem))
+    if game:
+        grounded.append(json.dumps(game))
+    else:
+        # Give the model a small, grounded slice of current app data for recommendation/discussion.
+        recent = _local_year_games(CURRENT_YEAR)[:8]
+        if recent:
+            grounded.append("INDEXED CURRENT-YEAR DATA:\n" + json.dumps(recent))
+    if last_results:
+        grounded.append("LAST RESULT TITLES:\n" + json.dumps(last_results))
+    grounded_context = "\n\n".join(grounded)
+    groq_reply = call_groq_api(messages, memory=mem, grounded_context=grounded_context)
+    if groq_reply:
+        state["last_query"] = current_msg
+        return groq_reply, []
+
+    # Absolute no-hallucination fallback.
     return (
-        f"🎮 **Recommendations for Fans of {target_name}**\n\n"
-        f"I analyzed the gameplay systems, combat rhythm, and progression design of **{target_name}**:\n\n"
-        f"Here are top-tier critical standouts sharing similar design DNA, complete with **Metacritic scores** for your research:\n\n"
-        f"**1. Elden Ring: Shadow of the Erdtree** (PC, PS5, Xbox — **Metacritic 95**)\n"
-        f"- Expansive world exploration, rich build variety, and sublime combat challenge.\n\n"
-        f"**2. Control: Ultimate Edition** (PC, PS5, Xbox — **Metacritic 85**)\n"
-        f"- Unmatched kinetic superpower sandbox action, telekinesis combat, and eerie supernatural atmosphere.\n\n"
-        f"**3. Cyberpunk 2077: Phantom Liberty** (PC, PS5, Xbox Series X|S — **Metacritic 89**)\n"
-        f"- Immersive first-person cyberware abilities, high-octane vehicular combat, and deep build customization.\n\n"
-        f"**4. Armored Core VI: Fires of Rubicon** (PC, PS5, Xbox — **Metacritic 86**)\n"
-        f"- High-speed 3D omnidirectional combat, deep mech assembly customization, and intense boss battles.\n\n"
-        f"Which platform (PC, PS5, Xbox, or Switch) are you playing on, and do you prefer open-world exploration or linear action?"
+        "I don't have enough verified gaming data to answer that accurately right now, and I won't make up a game, score, release date, or review. "
+        "Try a specific game, a release year (for example **1999**), a ranking request, a comparison, a recommendation request, or current gaming news.",
+        [],
     )
-
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -2466,7 +2949,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="pulsar-messages" id="pulsarMessages">
         <div class="pulsar-msg pulsar-msg-bot">
           <strong>Hi! I'm Pulsar, your Gaming-Focused AI.</strong><br><br>
-          I use verified Metacritic rankings across all years (1990–2026), live news feeds, your session context, and saved preferences to answer factually and instantly.<br><br>
+          I use grounded Metacritic rankings across release years, live gaming feeds when available, your current session context, and the gaming preferences you tell me during the session to answer factually and quickly.<br><br>
           Ask for any year (e.g. <em>"best game from 1999"</em> or <em>"top games of 2004"</em>), decade rankings, game reviews, head-to-head comparisons, or personalized recommendations!
         </div>
       </div>
@@ -2492,10 +2975,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   <script>
     let chatHistory = [];
-    let userId = localStorage.getItem('gp_user_id');
+    let userId = sessionStorage.getItem('gp_pulsar_session_id');
     if (!userId) {
-      userId = 'user_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-      localStorage.setItem('gp_user_id', userId);
+      const newId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : (Date.now() + '_' + Math.random().toString(36).substr(2, 9));
+      userId = 'pulsar_session_' + newId;
+      sessionStorage.setItem('gp_pulsar_session_id', userId);
     }
 
     function setFeedView(mode) {
@@ -2529,6 +3013,20 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     function closePulsar() {
       document.getElementById('pulsarModal').classList.remove('active');
+      // A Pulsar session lasts until the chatbot window is exited.
+      chatHistory = [];
+      sessionStorage.removeItem('gp_pulsar_session_id');
+      const newId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : (Date.now() + '_' + Math.random().toString(36).substr(2, 9));
+      userId = 'pulsar_session_' + newId;
+      sessionStorage.setItem('gp_pulsar_session_id', userId);
+      const msgs = document.getElementById('pulsarMessages');
+      if (msgs) {
+        msgs.innerHTML = `<div class="pulsar-msg pulsar-msg-bot">
+          <strong>Hi! I'm Pulsar, your Gaming-Focused AI.</strong><br><br>
+          I use grounded gaming data, current Metacritic rankings when available, your session context, and your gaming preferences to answer factually.<br><br>
+          Ask about any release year, game review, ranking, comparison, recommendation, current news, or what I remember about your preferences.
+        </div>`;
+      }
     }
     function handleKeyDown(e) {
       if (e.key === 'Enter') {
@@ -2610,10 +3108,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     function formatMarkdown(text) {
       let html = escapeHtml(text);
-      html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-      html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
-      html = html.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-      html = html.replace(/\n/g, '<br>');
+      html = html.replace(new RegExp('\\*\\*(.*?)\\*\\*', 'g'), '<strong>$1</strong>');
+      html = html.replace(new RegExp('\\*(.*?)\\*', 'g'), '<em>$1</em>');
+      html = html.replace(new RegExp('\\[([^\\]]+)\\]\\(([^\\)]+)\\)', 'g'), '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      html = html.replace(/\\n/g, '<br>');
       return html;
     }
   </script>
@@ -2768,7 +3266,7 @@ class GamePulseHandler(BaseHTTPRequestHandler):
                 elif messages and user_msg and (not messages or messages[-1].get("content") != user_msg):
                     messages.append({"role": "user", "content": user_msg})
 
-                reply = handle_pulsar_chat(messages, user_id=user_id)
+                reply, _results = handle_pulsar_chat(messages, user_id=user_id)
             except Exception as e:
                 reply = "I encountered an error analyzing your request. Please try again!"
 
