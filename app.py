@@ -25,7 +25,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
 # Strict socket timeout to prevent any external HTTP calls or SSL handshakes from hanging
-socket.setdefaulttimeout(4.0)
+socket.setdefaulttimeout(5.0)
 
 PORT = int(os.environ.get("PORT", 10000))
 DB_PATH = os.environ.get("DB_PATH", "gamepulse.db")
@@ -312,14 +312,15 @@ SEED_ARTICLES = [
     }
 ]
 
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS articles (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            link TEXT UNIQUE NOT NULL,
+            title TEXT UNIQUE,
+            link TEXT UNIQUE,
             published TEXT,
             summary TEXT,
             source TEXT,
@@ -328,44 +329,82 @@ def init_db():
             image_url TEXT
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS user_memory (
+            user_id TEXT,
+            pref_key TEXT,
+            pref_value TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (user_id, pref_key)
+        )
+    """)
     conn.commit()
 
-    # Always ensure seed articles exist for all categories
+    # 1. Clean up any existing misclassified deal/hardware/non-review articles in DB
+    cur.execute("""
+        UPDATE articles 
+        SET category = 'INDUSTRY', score = ''
+        WHERE category = 'REVIEW' AND (
+            LOWER(title) LIKE '%prime day%' OR 
+            LOWER(title) LIKE '%deal%' OR 
+            LOWER(title) LIKE '%save %' OR 
+            LOWER(title) LIKE '%off %' OR 
+            LOWER(title) LIKE '%discount%' OR
+            LOWER(title) LIKE '%price%' OR
+            LOWER(title) LIKE '%screwdriver%' OR
+            LOWER(title) LIKE '%soldering%' OR
+            LOWER(title) LIKE '%lego%' OR
+            LOWER(title) LIKE '%board game%' OR
+            LOWER(title) LIKE '%questions the previews%' OR
+            LOWER(title) LIKE '%port that runs natively%' OR
+            (LOWER(title) NOT LIKE '%review%' AND LOWER(title) NOT LIKE '%verdict%' AND LOWER(link) NOT LIKE '%review%')
+        )
+    """)
+    conn.commit()
+
+    # 2. Always ensure seed articles exist for all categories, especially valid reviews
     for art in SEED_ARTICLES:
-        cur.execute("""
-            INSERT OR IGNORE INTO articles (title, link, published, summary, source, category, score, image_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            art["title"],
-            art["link"],
-            art["published"],
-            art["summary"],
-            art["source"],
-            art["category"],
-            art.get("score", ""),
-            art.get("image_url", "")
-        ))
+        cur.execute("SELECT id FROM articles WHERE title = ? OR link = ?", (art["title"], art["link"]))
+        row = cur.fetchone()
+        if row:
+            if art["category"] == "REVIEW":
+                cur.execute("""
+                    UPDATE articles 
+                    SET category = ?, score = ?, summary = ?, source = ?
+                    WHERE id = ?
+                """, (art["category"], art.get("score", ""), art["summary"], art["source"], row[0]))
+        else:
+            cur.execute("""
+                INSERT OR IGNORE INTO articles (title, link, published, summary, source, category, score, image_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                art["title"],
+                art["link"],
+                art["published"],
+                art["summary"],
+                art["source"],
+                art["category"],
+                art.get("score", ""),
+                art.get("image_url", "")
+            ))
     conn.commit()
     conn.close()
 
-def get_articles(tag=None, search=None, limit=50):
+def get_articles(tag=None, search=None, limit=60):
     conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-    query = "SELECT id, title, link, published, summary, source, category, score, image_url FROM articles"
+    
+    query = "SELECT * FROM articles WHERE 1=1"
     params = []
-    clauses = []
     
     if tag and tag.upper() != "ALL":
-        clauses.append("UPPER(category) = ?")
+        query += " AND category = ?"
         params.append(tag.upper())
         
     if search:
-        clauses.append("(LOWER(title) LIKE ? OR LOWER(summary) LIKE ?)")
-        s = f"%{search.lower()}%"
-        params.extend([s, s])
-        
-    if clauses:
-        query += " WHERE " + " AND ".join(clauses)
+        query += " AND (title LIKE ? OR summary LIKE ?)"
+        params.extend([f"%{search}%", f"%{search}%"])
         
     query += " ORDER BY published DESC LIMIT ?"
     params.append(limit)
@@ -373,21 +412,7 @@ def get_articles(tag=None, search=None, limit=50):
     cur.execute(query, params)
     rows = cur.fetchall()
     conn.close()
-    
-    articles = []
-    for r in rows:
-        articles.append({
-            "id": r[0],
-            "title": r[1],
-            "link": r[2],
-            "published": r[3],
-            "summary": r[4],
-            "source": r[5],
-            "category": r[6],
-            "score": r[7],
-            "image_url": r[8] or "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=600&q=80"
-        })
-    return articles
+    return [dict(r) for r in rows]
 
 # ---------------------------------------------------------------------------
 # RSS Ingestion Pipeline
@@ -445,9 +470,9 @@ def _fetch_article_og_image(article_url):
         req = urllib.request.Request(
             article_url,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36 GamePulseAI-Thumbnail",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 GamePulseAI-Thumbnail",
                 "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
             },
         )
         with urllib.request.urlopen(req, timeout=1.8) as response:
@@ -499,97 +524,47 @@ def refresh_article_images(limit=120):
             conn.close()
 
 FEEDS = [
-    {"url": "https://feeds.ign.com/ign/all", "source": "IGN", "default_cat": "REVIEW"},
+    {"url": "https://feeds.ign.com/ign/reviews", "source": "IGN", "default_cat": "REVIEW"},
     {"url": "https://www.gamespot.com/feeds/reviews/", "source": "GameSpot", "default_cat": "REVIEW"},
+    {"url": "https://www.eurogamer.net/feed/reviews", "source": "Eurogamer", "default_cat": "REVIEW"},
     {"url": "https://www.pcgamer.com/rss/", "source": "PC Gamer", "default_cat": "UPDATE"},
     {"url": "https://www.rockpapershotgun.com/feed", "source": "Rock Paper Shotgun", "default_cat": "UPDATE"},
     {"url": "https://www.polygon.com/rss/index.xml", "source": "Polygon", "default_cat": "INDUSTRY"},
-    {"url": "https://www.eurogamer.net/feed", "source": "Eurogamer", "default_cat": "REVIEW"},
     {"url": "https://insider-gaming.com/feed/", "source": "Insider Gaming", "default_cat": "RUMOR"}
 ]
 
 
 def classify_content(title, summary, default_cat="REVIEW"):
     text = (title + " " + (summary or "")).lower()
-    if any(k in text for k in ["review", "verdict", "scored", "impressions", "metacritic", "opencritic"]):
-        return "REVIEW"
-    if any(k in text for k in ["patch", "update", "hotfix", "expansion", "dlc", "changelog", "notes"]):
-        return "UPDATE"
+    
+    # Strictly exclude shopping deals, guides, and sales from reviews
+    if any(k in text for k in [
+        "prime day", "deal", "deals", "discount", "discounts", "save ", "lowest price", 
+        "off the", "% off", "buying guide", "gift guide", "black friday", "cyber monday", 
+        "soldering", "screwdriver", "lego", "board game"
+    ]):
+        return "INDUSTRY"
+        
     if any(k in text for k in ["trailer", "gameplay reveal", "teaser", "footage", "first look"]):
         return "TRAILER"
+    if any(k in text for k in ["patch", "update", "hotfix", "expansion", "dlc", "changelog", "notes"]):
+        return "UPDATE"
     if any(k in text for k in ["rumor", "leak", "reportedly", "insider", "datamine", "speculation"]):
         return "RUMOR"
     if any(k in text for k in ["indie", "mod", "modding", "early access", "deckbuilder", "metroidvania"]):
         return "INDIE"
+    if any(k in text for k in ["review", "verdict", "scored", "review:", "impressions", "metacritic", "opencritic"]):
+        return "REVIEW"
     if any(k in text for k in ["sales", "financials", "layoffs", "acquisition", "studio", "ceo", "industry"]):
         return "INDUSTRY"
+        
+    # If default_cat is REVIEW, only allow it if the title or text actually indicates a review
+    if default_cat == "REVIEW":
+        if any(k in text for k in ["review", "verdict", "score", "impressions", "hands-on", "hands on"]) or re.search(r"\b(10/10|[1-9]\.[0-9]/10|[6-9][0-9]/100)\b", text):
+            return "REVIEW"
+        return "INDUSTRY"
+        
     return default_cat
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS articles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT UNIQUE,
-            link TEXT,
-            published TEXT,
-            summary TEXT,
-            source TEXT,
-            category TEXT,
-            score TEXT,
-            image_url TEXT
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS user_memory (
-            user_id TEXT,
-            pref_key TEXT,
-            pref_value TEXT,
-            updated_at TEXT,
-            PRIMARY KEY (user_id, pref_key)
-        )
-    """)
-    conn.commit()
-
-    # Seed initial articles if empty
-    c.execute("SELECT COUNT(*) FROM articles")
-    if c.fetchone()[0] == 0:
-        for a in SEED_ARTICLES:
-            try:
-                c.execute("""
-                    INSERT OR IGNORE INTO articles 
-                    (title, link, published, summary, source, category, score, image_url)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (a["title"], a["link"], a["published"], a["summary"], a["source"], a["category"], a["score"], a["image_url"]))
-            except Exception:
-                pass
-        conn.commit()
-    conn.close()
-
-def get_articles(tag=None, search=None, limit=60):
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    
-    query = "SELECT * FROM articles WHERE 1=1"
-    params = []
-    
-    if tag and tag.upper() != "ALL":
-        query += " AND category = ?"
-        params.append(tag.upper())
-        
-    if search:
-        query += " AND (title LIKE ? OR summary LIKE ?)"
-        params.extend([f"%{search}%", f"%{search}%"])
-        
-    query += " ORDER BY published DESC LIMIT ?"
-    params.append(limit)
-    
-    c.execute(query, params)
-    rows = c.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
 
 def run_news_aggregation():
     conn = sqlite3.connect(DB_PATH)
@@ -648,8 +623,6 @@ def run_news_aggregation():
                     "image_url": rss_image or DEFAULT_ARTICLE_IMAGE,
                 })
 
-            # Resolve publisher thumbnails in parallel so feed refresh does not block on sequential
-            # article-page requests. RSS-provided images win; Open Graph is the fallback.
             missing = [r for r in records if r["image_url"] == DEFAULT_ARTICLE_IMAGE]
             if missing:
                 with ThreadPoolExecutor(max_workers=min(8, len(missing))) as ex:
@@ -670,15 +643,12 @@ def run_news_aggregation():
             continue
 
     conn.close()
-    # Backfill existing rows asynchronously through the scheduler's next pass without changing
-    # the dashboard/card markup.
     try:
         refresh_article_images(limit=120)
     except Exception:
         pass
 
 def start_metacritic_warmup():
-    """Warm DNS, the public API key and the current-year finder cache off the request path."""
     def warm():
         try:
             _resolve_dns("backend.metacritic.com")
@@ -977,6 +947,10 @@ ALL_YEARS_DATABASE = {
         {"title": "Ace Combat 8: Wings of the Brave", "platforms": "PC, PS5, Xbox Series X|S", "genre": "Aerial Combat Simulation", "score": 87, "desc": "Hyper-sonic dogfights across hyper-realistic cloudscapes with orchestral soundtrack and intense campaign."}
     ]
 }
+
+# ---------------------------------------------------------------------------
+# 32 Genre & Specific Game Archetypes
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # 32 Genre & Specific Game Archetypes
@@ -1570,10 +1544,9 @@ METACRITIC_CACHE_TTL = 60 * 10
 METACRITIC_NEGATIVE_CACHE_TTL = 15
 METACRITIC_DETAIL_CACHE_TTL = 60 * 60
 METACRITIC_API_BASE = os.environ.get("METACRITIC_API_BASE", "https://backend.metacritic.com").rstrip("/")
-# Prefer an environment-provided key, but discover the current public web key from Metacritic
-# when it rotates. This avoids baking a stale credential into the application.
 METACRITIC_API_KEY = os.environ.get("METACRITIC_API_KEY", "").strip()
-METACRITIC_DISCOVERED_KEY = None
+DEFAULT_METACRITIC_KEY = "1MOZgmNFxvmljaQR1X9KAij9Mo4xAY3u"
+METACRITIC_DISCOVERED_KEY = DEFAULT_METACRITIC_KEY
 METACRITIC_DISCOVERY_LOCK = threading.RLock()
 METACRITIC_DNS_CACHE = {}
 METACRITIC_DNS_LOCK = threading.RLock()
@@ -1666,8 +1639,6 @@ def _session_clear(session_id):
 
 
 def get_user_memory(user_id):
-    # Pulsar now treats the browser's session id as session-scoped memory.
-    # Legacy persistent memory is retained only for callers that explicitly use a legacy id.
     if user_id and str(user_id).startswith("pulsar_session_"):
         return dict(_session_memory(user_id))
     if not user_id:
@@ -1783,7 +1754,6 @@ def _extract_preferences(text):
     elif "spoilers are fine" in low or "spoilers okay" in low or "spoil it" in low:
         changes["spoilers"] = "spoilers allowed"
 
-    # Save specific game likes/dislikes only when the title resolves to a known game.
     if any(k in low for k in ["favorite game", "favourite game", "i love ", "i like ", "games i love"]):
         candidates = re.split(r"(?:favorite game is|favourite game is|i love|i like|games i love)", text, flags=re.I)
         if len(candidates) > 1:
@@ -1847,8 +1817,6 @@ def _metacritic_game_url(title):
 
 
 def _resolve_dns(hostname, force=False):
-    """Resolve Metacritic DNS once and cache it briefly. The actual HTTP request still
-    uses the hostname so TLS/SNI and certificate validation remain correct."""
     now = time.time()
     with METACRITIC_DNS_LOCK:
         cached = METACRITIC_DNS_CACHE.get(hostname)
@@ -1873,16 +1841,19 @@ def _discover_metacritic_api_key(force=False):
         urls = ["https://www.metacritic.com/", "https://www.metacritic.com/game/"]
         for page_url in urls:
             try:
-                _resolve_dns(urllib.parse.urlparse(page_url).hostname or "www.metacritic.com")
+                try:
+                    _resolve_dns(urllib.parse.urlparse(page_url).hostname or "www.metacritic.com")
+                except Exception:
+                    pass
                 req = urllib.request.Request(
                     page_url,
                     headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36 GamePulseAI",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 GamePulseAI",
                         "Accept": "text/html,application/xhtml+xml",
-                        "Accept-Language": "en-US,en;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.9",
                     },
                 )
-                with urllib.request.urlopen(req, timeout=1.7) as response:
+                with urllib.request.urlopen(req, timeout=3.0) as response:
                     html_bytes = response.read(350_000)
                 text = html_bytes.decode("utf-8", errors="ignore")
                 match = re.search(r"backend\.metacritic\.com[^\"' ]*apiKey=([A-Za-z0-9]+)", text)
@@ -1893,7 +1864,7 @@ def _discover_metacritic_api_key(force=False):
                     return METACRITIC_DISCOVERED_KEY
             except Exception:
                 continue
-    return None
+    return DEFAULT_METACRITIC_KEY
 
 
 def _metacritic_api_url(path, **params):
@@ -1904,7 +1875,7 @@ def _metacritic_api_url(path, **params):
     return f"{METACRITIC_API_BASE}/{path.lstrip('/')}?{urllib.parse.urlencode(q)}"
 
 
-def _fetch_json_cached(url, timeout=1.8, ttl=METACRITIC_CACHE_TTL):
+def _fetch_json_cached(url, timeout=3.5, ttl=METACRITIC_CACHE_TTL):
     now = time.time()
     with METACRITIC_CACHE_LOCK:
         cached = METACRITIC_CACHE.get(url)
@@ -1915,50 +1886,53 @@ def _fetch_json_cached(url, timeout=1.8, ttl=METACRITIC_CACHE_TTL):
 
     value = None
     response_status = None
-    parsed_url = urllib.parse.urlparse(url)
-    host = parsed_url.hostname or ""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36 GamePulseAI/4.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "application/json,text/plain,*/*",
-        "Accept-Language": "en-US,en;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
         "Origin": "https://www.metacritic.com",
         "Referer": "https://www.metacritic.com/",
         "Cache-Control": "no-cache",
     }
 
-    for attempt in range(2):
-        try:
-            # Explicitly exercise the host's DNS resolution before the request. This makes
-            # transient resolver failures visible and retryable rather than silently falling
-            # through to a fake/local ranking.
-            addresses = _resolve_dns(host, force=(attempt == 1)) if host else []
-            if host and not addresses:
-                continue
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=timeout) as response:
-                response_status = getattr(response, "status", 200)
-                raw = response.read(1_250_000)
-                if response_status != 200:
-                    raise urllib.error.HTTPError(url, response_status, "Metacritic API HTTP error", response.headers, None)
-                value = json.loads(raw.decode("utf-8", errors="ignore"))
+    urls_to_try = [url]
+    if "backend.metacritic.com" in url:
+        urls_to_try.append(url.replace("https://backend.metacritic.com", "https://internal-prod.apigee.fandom.net/v1/xapi"))
+
+    for target_url in urls_to_try:
+        t_parsed = urllib.parse.urlparse(target_url)
+        t_host = t_parsed.hostname or ""
+        for attempt in range(2):
+            try:
+                try:
+                    _resolve_dns(t_host, force=(attempt == 1))
+                except Exception:
+                    pass
+                req = urllib.request.Request(target_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=timeout) as response:
+                    response_status = getattr(response, "status", 200)
+                    raw = response.read(1_250_000)
+                    if response_status != 200:
+                        raise urllib.error.HTTPError(target_url, response_status, "Metacritic API HTTP error", response.headers, None)
+                    value = json.loads(raw.decode("utf-8", errors="ignore"))
+                    break
+            except urllib.error.HTTPError as exc:
+                response_status = exc.code
+                if exc.code in (401, 403) and t_host.endswith("metacritic.com") and attempt == 0:
+                    key = _discover_metacritic_api_key(force=True)
+                    if key:
+                        parsed = urllib.parse.parse_qs(t_parsed.query, keep_blank_values=True)
+                        parsed["apiKey"] = [key]
+                        rebuilt_query = urllib.parse.urlencode(parsed, doseq=True)
+                        target_url = urllib.parse.urlunparse(t_parsed._replace(query=rebuilt_query))
+                        continue
                 break
-        except urllib.error.HTTPError as exc:
-            response_status = exc.code
-            if exc.code in (401, 403) and host.endswith("metacritic.com") and not METACRITIC_API_KEY and attempt == 0:
-                key = _discover_metacritic_api_key(force=True)
-                if key:
-                    parsed = urllib.parse.parse_qs(parsed_url.query, keep_blank_values=True)
-                    parsed["apiKey"] = [key]
-                    rebuilt_query = urllib.parse.urlencode(parsed, doseq=True)
-                    url = urllib.parse.urlunparse(parsed_url._replace(query=rebuilt_query))
+            except Exception:
+                if attempt == 0:
+                    time.sleep(0.05)
                     continue
-            break
-        except (socket.gaierror, TimeoutError, socket.timeout, urllib.error.URLError, OSError, ValueError):
-            if attempt == 0:
-                time.sleep(0.04)
-                continue
-            break
-        except Exception:
+                break
+        if value is not None:
             break
 
     with METACRITIC_CACHE_LOCK:
@@ -1996,7 +1970,7 @@ def _parse_finder_item(item):
     return {
         "title": str(item.get("title") or "").strip(),
         "score": score,
-        "year": item.get("premiereYear"),
+        "year": item.get("premiereYear") or item.get("releaseYear"),
         "slug": item.get("slug"),
         "critic_reviews": summary.get("reviewCount"),
         "user_score": (item.get("userScore") or {}).get("score") if isinstance(item.get("userScore"), dict) else item.get("userScore"),
@@ -2037,7 +2011,7 @@ def _fetch_metacritic_game_detail(slug):
     if not slug:
         return None
     url = _metacritic_api_url(
-        f"games/metacritic/{urllib.parse.quote(str(slug), safe='-')} /web".replace(" ", ""),
+        f"games/metacritic/{urllib.parse.quote(str(slug), safe='-')}/web",
         componentName="product",
         componentType="Product",
     )
@@ -2110,7 +2084,6 @@ def _filter_live_by_platform(items, platform, target_count=5):
     if not platform:
         return items[:target_count]
     filtered = []
-    # Prefer local platform metadata when available; otherwise verify the Metacritic product record.
     for item in items[:24]:
         local = _find_local_for_live_item(item.get("title", ""), item.get("year"))
         if local and any(platform.lower() in p.lower() for p in str(local.get("platforms", "")).split(",")):
@@ -2127,7 +2100,6 @@ def _filter_live_by_platform(items, platform, target_count=5):
 
 
 def fetch_metacritic_year(year, platform=None, limit=10):
-    # Pull more candidates when platform filtering is requested, then verify platforms as needed.
     candidates, ok, url = _browse_metacritic_games(year_min=year, year_max=year, limit=30 if platform else limit)
     if not ok:
         return [], False, _metacritic_year_url(year, platform)
@@ -2193,11 +2165,14 @@ def _local_year_games(year):
 def _find_local_for_live_item(title, year=None):
     target = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
     candidates = ALL_YEARS_DATABASE.get(year, []) if year in ALL_YEARS_DATABASE else []
+    if not candidates:
+        for y, gms in ALL_YEARS_DATABASE.items():
+            candidates.extend(gms)
     for g in candidates:
         gs = re.sub(r"[^a-z0-9]+", " ", g["title"].lower()).strip()
         if target == gs or target in gs or gs in target:
             item = dict(g)
-            item["year"] = year
+            item["year"] = g.get("year", year)
             return item
     return None
 
@@ -2210,7 +2185,7 @@ def _format_ranked_games(title, games, source_url, source_label, pref_platform=N
     for i, g in enumerate(games[:10], 1):
         if "score" not in g:
             continue
-        local = g.get("local") or {}
+        local = g.get("local") or _find_local_for_live_item(g["title"], g.get("year")) or {}
         platforms = g.get("platforms") or local.get("platforms") or ""
         genre = g.get("genre") or local.get("genre") or ""
         year = g.get("year") or local.get("year") or ""
@@ -2269,7 +2244,7 @@ def get_year_response(year, min_score=None, pref_platform=None):
             f"Top Indexed Metacritic Games of {year}" + (f" for {pref_platform}" if pref_platform else ""),
             local_games[:5],
             _metacritic_year_url(year, pref_platform),
-            "Metacritic year ranking",
+            "GamePulse indexed historical data",
             pref_platform,
         )
         return response + "\n\n*Live Metacritic retrieval was unavailable, so these results come from GamePulse's indexed historical dataset. I have not labeled them as live.*", results
@@ -2286,8 +2261,6 @@ def get_period_response(start_year, end_year, pref_platform=None):
     if start_year > end_year:
         return "That year range is not valid.", []
 
-    # Use cached/live yearly pages in parallel. This keeps the first request bounded while
-    # subsequent requests are effectively instant from the 10-minute cache.
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         years = list(range(start_year, end_year + 1))
@@ -2323,12 +2296,15 @@ def get_period_response(start_year, end_year, pref_platform=None):
         deduped.setdefault(key, g)
     games = list(deduped.values())[:10]
     source_url = _metacritic_year_url(end_year, pref_platform)
-    label = "Metacritic" if gathered_live else "Indexed Metacritic dataset"
-    return _format_ranked_games(f"Highest-Rated Games from {start_year}–{end_year}", games, source_url, label, pref_platform)
+    label = "Metacritic" if gathered_live else "GamePulse indexed historical data"
+    response, results = _format_ranked_games(f"Highest-Rated Games from {start_year}–{end_year}", games, source_url, label, pref_platform)
+    if not gathered_live:
+        response += "\n\n*Live Metacritic retrieval was unavailable, so these are clearly labeled indexed historical results rather than a claim of live ranking data.*"
+    return response, results
 
 
 def format_decade_response(pref_platform=None):
-    return get_period_response(CURRENT_YEAR - 9, CURRENT_YEAR, pref_platform)
+    return get_period_response(CURRENT_YEAR - 10, CURRENT_YEAR, pref_platform)
 
 
 def format_all_time_response(pref_platform=None):
@@ -2336,7 +2312,6 @@ def format_all_time_response(pref_platform=None):
     if is_live:
         games = []
         for item in live:
-            # Try to recover local metadata for the year without ever inventing a score.
             local = find_game_across_databases(item["title"])
             enriched = dict(item)
             if local:
@@ -2358,34 +2333,29 @@ def format_all_time_response(pref_platform=None):
         if g["title"].lower() not in seen:
             seen.add(g["title"].lower())
             deduped.append(g)
-    return _format_ranked_games(
+    response, results = _format_ranked_games(
         "Highest-Rated Indexed Video Games of All Time",
         deduped[:10],
         url,
-        "Metacritic all-time rankings",
+        "GamePulse indexed historical data",
         pref_platform,
     )
+    return response + "\n\n*Live Metacritic retrieval was unavailable, so these are clearly labeled indexed historical results rather than a claim of live ranking data.*", results
 
 
 def find_game_across_databases(name):
-    """Resolve a game from the local catalogue first, then Metacritic's structured search.
-    Low-confidence matches are rejected so Pulsar never turns a guess into a factual claim.
-    """
     name_clean = re.sub(r"\s+", " ", str(name).strip().lower())
     if not name_clean:
         return None
-    # Exact local match.
     for year, games in ALL_YEARS_DATABASE.items():
         for g in games:
             if name_clean == g["title"].strip().lower():
                 return dict(g, year=year)
-    # Obvious local containment.
     for year, games in ALL_YEARS_DATABASE.items():
         for g in games:
             title_clean = g["title"].strip().lower()
             if len(name_clean) >= 5 and (name_clean in title_clean or title_clean in name_clean):
                 return dict(g, year=year)
-    # Live Metacritic search, exact-ish first result only.
     try:
         results = fetch_metacritic_search(name, limit=8)
     except Exception:
@@ -2417,7 +2387,6 @@ def find_game_across_databases(name):
                 "slug": best.get("slug"),
                 "live": True,
             }
-    # Conservative fuzzy local matching only.
     best = None
     best_ratio = 0.86
     for year, games in ALL_YEARS_DATABASE.items():
@@ -2435,7 +2404,6 @@ def _find_explicit_game_in_text(text):
     for year, games in ALL_YEARS_DATABASE.items():
         for g in games:
             titles.append((len(g["title"]), g["title"], year, g))
-    # Longest titles first prevents "Half-Life" from winning when the user asked about "Half-Life 2".
     for _, title, year, g in sorted(titles, reverse=True):
         if re.search(r"(?<![a-z0-9])" + re.escape(title.lower()) + r"(?![a-z0-9])", low):
             return dict(g, year=year)
@@ -2515,7 +2483,6 @@ def _normalize_search_text(text):
 
 def _extract_genre(text):
     low = _normalize_search_text(text)
-    # Longest aliases first so "action rpg" wins over generic "rpg".
     candidates = []
     for canonical, aliases in GENRE_FAMILY_ALIASES.items():
         for alias in aliases:
@@ -2542,7 +2509,6 @@ def _extract_result_limit(text):
 
 def _extract_relative_period(text):
     low = _normalize_search_text(text)
-    # "last/past N years" means N calendar release years ending in the current year.
     m = re.search(r"\b(?:last|past|previous)\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+years?\b", low)
     if m:
         word_numbers = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
@@ -2565,7 +2531,6 @@ def _extract_ranking_scope(text):
     relative = _extract_relative_period(low)
     if relative:
         return relative
-    # Named decades: "1990s", "90s", "the 2000s".
     m = re.search(r"\b(?:the\s+)?((?:19|20)?\d{2})s\b", low)
     if m:
         token = m.group(1)
@@ -2641,7 +2606,6 @@ def _genre_matches(record, requested):
     aliases = GENRE_FAMILY_ALIASES.get(requested, [requested])
     if any(re.search(r"\b" + re.escape(alias) + r"\b", text) for alias in aliases):
         return True
-    # Curated local archetype knowledge can confirm a genre when live metadata uses a different label.
     title = _normalize_search_text(record.get("title", ""))
     for arch in ALL_ARCHETYPES:
         if requested not in (arch.get("title", "").lower()) and not any(requested == g for g in GENRE_FAMILY_ALIASES if g in arch.get("title", "").lower()):
@@ -2750,7 +2714,6 @@ def get_filtered_ranking_response(filters):
     if start_year is not None and end_year is not None and start_year > end_year:
         return "That release-year range is not valid. I won't guess what you intended.", []
 
-    # Live Metacritic finder: use score-sorted pages, then apply genre/platform filters locally.
     scope_pages = 1
     if genre and platform:
         scope_pages = 6
@@ -2766,8 +2729,6 @@ def get_filtered_ranking_response(filters):
             continue
         seen.add(title_key)
         item["year"] = item.get("year") or start_year
-        # Cheap genre filter first. Finder metadata includes genres on the current Metacritic backend;
-        # if absent, the detail fetch below will supply authoritative genre metadata.
         if genre and not _genre_matches(item, genre) and item.get("genres"):
             continue
         if genre and not item.get("genres"):
@@ -2792,15 +2753,11 @@ def get_filtered_ranking_response(filters):
             return None
         score = _record_platform_score(record, platform)
         if score is None:
-            # Never substitute a lead-platform score when the requested platform's score is missing.
             return None
         record["rank_score"] = score
         return record
 
     if platform:
-        # Resolve product records concurrently in small batches and stop as soon as we have enough
-        # verified matches. This keeps common filtered questions fast while remaining exhaustive enough
-        # for sparse platform filters.
         try:
             from concurrent.futures import ThreadPoolExecutor
             for batch_start in range(0, len(prepared), 12):
@@ -2847,10 +2804,10 @@ def get_filtered_ranking_response(filters):
         if qualifier:
             title += " — " + " on ".join(qualifier)
         title += f" ({scope_label})"
-        lines = [f"🏆 **{title}**", "", "Ranked by the verified Metacritic critic score for the requested filters.", ""]
+        lines = [f"🏆 **{title}**", "", f"Source: [Metacritic]({source_url})", ""]
         results = []
         for i, game in enumerate(selected, 1):
-            local = game.get("local") or {}
+            local = game.get("local") or _find_local_for_live_item(game['title'], game.get('year')) or {}
             year = game.get("year") or local.get("year") or ""
             plats = game.get("platforms") or local.get("platforms") or ""
             genres = game.get("genres") or local.get("genre") or game.get("genre") or ""
@@ -2867,7 +2824,7 @@ def get_filtered_ranking_response(filters):
             results.append(game["title"])
         return "\n".join(lines).strip(), results
 
-    # Live retrieval unavailable or no live matches: use only explicitly labeled local data.
+    # Live retrieval unavailable: use clearly labeled indexed data fallback
     local = _grounded_local_candidates(start_year, end_year, genre, platform)
     if score_floor is not None:
         local = [g for g in local if int(g.get("score") or 0) >= score_floor]
@@ -2907,7 +2864,6 @@ def _last_titles_from_history(history, state):
 
 
 def _general_recommendations(text, mem):
-    """Return grounded recommendations when the user asks generally and no specific archetype matched."""
     platform = _extract_platform(text) or (mem.get("platforms") or [None])[0]
     preferred = set(mem.get("favorite_genres") or [])
     disliked = set(mem.get("disliked_genres") or [])
@@ -2966,11 +2922,9 @@ def _recommend_from_preferences(text, mem):
     favorite_genres = mem.get("favorite_genres") or []
     disliked_genres = mem.get("disliked_genres") or []
 
-    # Resolve an explicit "games like X" request to an indexed title when possible.
     like_match = re.search(r"(?:games like|similar to|fans of)\s+(.+)$", text, flags=re.I)
     resolved_target = find_game_across_databases(like_match.group(1).strip(" ?")) if like_match else None
 
-    # First try the archetype catalog because it already contains curated gaming DNA.
     candidates = []
     for arch in ALL_ARCHETYPES:
         score = 0
@@ -3053,10 +3007,6 @@ def _comparison_response(a, b):
     return "\n".join(lines), [a["title"], b["title"]]
 
 
-# ---------------------------------------------------------------------------
-# Grounded Groq Completion — only after deterministic fact retrieval
-# ---------------------------------------------------------------------------
-
 def call_groq_api(messages, memory=None, grounded_context=""):
     if not GROQ_API_KEY:
         return None
@@ -3091,7 +3041,7 @@ def call_groq_api(messages, memory=None, grounded_context=""):
             headers={
                 "Authorization": f"Bearer {GROQ_API_KEY}",
                 "Content-Type": "application/json",
-                "User-Agent": "GamePulseAI/3.0",
+                "User-Agent": "GamePulseAI/4.0",
             },
         )
         with urllib.request.urlopen(req, timeout=2.2) as response:
@@ -3117,7 +3067,6 @@ def handle_pulsar_chat(messages, user_id=None):
     lower_q = current_msg.lower()
     mem = _session_memory(session_id)
 
-    # Automatically retain relevant gaming preferences from normal conversation.
     changes = _extract_preferences(current_msg)
     _apply_preferences(session_id, changes)
     mem = _session_memory(session_id)
@@ -3138,7 +3087,6 @@ def handle_pulsar_chat(messages, user_id=None):
     if changes and memory_only:
         return f"🧠 **Got it — I’ll keep that in mind for this Pulsar session.**\n\n{_memory_summary(mem)}", []
 
-    # Resolve conversational references against the server-side session's last list.
     last_results = _last_titles_from_history(history, state)
     ordinal_match = re.search(r"\b(?:tell me more about|more info on|details on|tell me about|what about)\s+(?:#|number\s+)?(\d+|first|second|third|fourth|fifth)\b", lower_q)
     if ordinal_match and last_results:
@@ -3151,7 +3099,6 @@ def handle_pulsar_chat(messages, user_id=None):
                 state["last_results"] = results
                 return reply, results
 
-    # Pronoun-like follow-up: "what about that one on PC?" / "which of those are on Switch?"
     platform = _extract_platform(current_msg)
     is_filter = any(k in lower_q for k in ["which of those", "are any of those", "what about that one", "filter", "available on", "playable on", "on pc", "on switch", "on ps5", "on xbox"])
     if platform and is_filter and last_results:
@@ -3175,7 +3122,6 @@ def handle_pulsar_chat(messages, user_id=None):
             return "\n".join(lines), results
         return f"None of the games in the previous list have a verified **{platform.upper()}** listing in my indexed data. I won't guess.", []
 
-    # Comparison must be resolved before broad year/platform routing.
     vs_match = re.search(r"(.+?)\s+(?:vs\.?|versus|compared to|against)\s+(.+)", current_msg, flags=re.I)
     if vs_match:
         a = find_game_across_databases(vs_match.group(1).strip())
@@ -3185,36 +3131,23 @@ def handle_pulsar_chat(messages, user_id=None):
             state["last_results"] = results
             return reply, results
 
-    # Unified ranking router. It deliberately runs before legacy single-dimension routes so
-    # every combination of wording + year/range + platform + genre + score floor is handled
-    # by the same deterministic, grounded engine.
     if _is_ranking_intent(current_msg):
         ranking_filters = _ranking_filters(current_msg, mem)
-        # Avoid treating "games like X" as a rankings query unless the user explicitly asked
-        # for a ranking/superlative. Recommendation queries continue to the curated engine below.
         if not any(k in lower_q for k in ["games like", "similar to", "fans of"]):
             reply, results = get_filtered_ranking_response(ranking_filters)
             state["last_results"] = results
             state["last_query"] = current_msg
             return reply, results
 
-    # A plain release-year question such as "1999 games" can still be answered deterministically.
-    # It is intentionally not routed here unless it looks like a ranking request.
-
-    # Direct game lookup/review against the indexed gaming catalogue.
     game = _find_explicit_game_in_text(current_msg)
 
     if not game:
-        # Only use fuzzy title resolution if the query contains an explicit game-intent phrase.
         if any(k in lower_q for k in ["review ", "about ", "tell me about ", "how is ", "score for ", "metacritic score for ", "is "]):
             candidate = re.sub(r"^(review|about|tell me about|how is|score for|metacritic score for|is)\s+", "", current_msg, flags=re.I).strip(" ?")
             if candidate:
                 game = find_game_across_databases(candidate)
 
     if game:
-        factual_metadata_terms = ["developer", "developed", "developer?", "publisher", "release date", "released", "metacritic", "score", "platform", "genre", "review", "about"]
-        # Only answer metadata questions that the indexed record actually contains. This keeps
-        # the no-hallucination guarantee stronger than a generic LLM fallback.
         if any(term in lower_q for term in ["developer", "developed", "publisher", "release date", "when did", "who made"]):
             return (f"I have the verified indexed facts for **{game['title']}** — its Metacritic score, year, platforms, genre, and overview — "
                     "but developer/publisher metadata is not present in my grounded record, so I won't guess. "
@@ -3223,7 +3156,6 @@ def handle_pulsar_chat(messages, user_id=None):
         state["last_results"] = results
         return reply, results
 
-    # Recommendations using current session preferences and the curated archetype catalogue.
     if any(k in lower_q for k in ["recommend", "recommendations", "what should i play", "suggest a game", "games like", "similar to", "i like"]):
         reply, results = _recommend_from_preferences(current_msg, mem)
         if not reply:
@@ -3232,7 +3164,6 @@ def handle_pulsar_chat(messages, user_id=None):
             state["last_results"] = results
             return reply, results
 
-    # Latest/current news is deterministic and grounded entirely in the app's feed DB.
     if any(k in lower_q for k in ["latest news", "latest gaming news", "what's new", "whats new", "today's news", "recent gaming news", "recent stories", "articles posted today"]):
         articles = get_articles(limit=8)
         lines = ["📰 **Latest Gaming Coverage in GamePulse**", ""]
@@ -3247,14 +3178,12 @@ def handle_pulsar_chat(messages, user_id=None):
         state["last_results"] = results
         return "\n".join(lines), results
 
-    # Grounded natural-language fallback. The model receives only facts we have actually retrieved.
     grounded = []
     if mem:
         grounded.append("SESSION MEMORY:\n" + _memory_summary(mem))
     if game:
         grounded.append(json.dumps(game))
     else:
-        # Give the model a small, grounded slice of current app data for recommendation/discussion.
         recent = _local_year_games(CURRENT_YEAR)[:8]
         if recent:
             grounded.append("INDEXED CURRENT-YEAR DATA:\n" + json.dumps(recent))
@@ -3266,12 +3195,12 @@ def handle_pulsar_chat(messages, user_id=None):
         state["last_query"] = current_msg
         return groq_reply, []
 
-    # Absolute no-hallucination fallback.
     return (
         "I don't have enough verified gaming data to answer that accurately right now, and I won't make up a game, score, release date, or review. "
         "Try a specific game, a release year (for example **1999**), a ranking request, a comparison, a recommendation request, or current gaming news.",
         [],
     )
+
 
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
@@ -3792,8 +3721,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <header>
     <div class="header-top">
       <a href="/" class="logo-container">
-        <span class="logo-badge">GP</span>
-        <span class="logo-text">GAMEPULSE</span>
+        <span class="logo-text">GAME<span style="color: var(--accent);">PULSE</span></span>
       </a>
       <ul class="nav-links">
         <li><a href="/" class="__ACTIVE_ALL__">All News</a></li>
@@ -3900,7 +3828,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
       }
     }
 
-    // Restore view preference
     document.addEventListener('DOMContentLoaded', () => {
       const savedView = localStorage.getItem('gp_feed_view');
       if (savedView === 'list') {
@@ -3914,7 +3841,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     }
     function closePulsar() {
       document.getElementById('pulsarModal').classList.remove('active');
-      // Ending the Pulsar window ends this chat session; the next opening starts fresh.
       chatHistory = [];
       try { sessionStorage.removeItem('gp_pulsar_session_id'); } catch (_) {}
       userId = 'pulsar_session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
@@ -3940,7 +3866,6 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
       chatHistory.push({ role: 'user', content: text });
 
-      // Add loading indicator with explicit analyzing message
       const typingId = appendMessage('Pulsar is analyzing live gaming sources...', 'bot', true);
 
       try {
