@@ -18,6 +18,8 @@ import threading
 import re
 import html
 import difflib
+from html.parser import HTMLParser
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -391,6 +393,111 @@ def get_articles(tag=None, search=None, limit=50):
 # RSS Ingestion Pipeline
 # ---------------------------------------------------------------------------
 
+DEFAULT_ARTICLE_IMAGE = "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=600&q=80"
+ARTICLE_IMAGE_CACHE = {}
+ARTICLE_IMAGE_CACHE_LOCK = threading.RLock()
+ARTICLE_IMAGE_CACHE_TTL = 24 * 60 * 60
+ARTICLE_IMAGE_NEGATIVE_TTL = 30 * 60
+
+class _ArticleImageParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.image = ""
+    def handle_starttag(self, tag, attrs):
+        if self.image or tag.lower() != "meta":
+            return
+        data = {str(k).lower(): str(v).strip() for k, v in attrs if v is not None}
+        key = (data.get("property") or data.get("name") or "").lower()
+        if key in {"og:image", "og:image:url", "og:image:secure_url", "twitter:image", "twitter:image:src"}:
+            candidate = data.get("content", "")
+            if candidate:
+                self.image = candidate
+
+
+def _extract_rss_image(item, base_url=""):
+    """Prefer the publisher-provided image embedded in the feed."""
+    for elem in list(item):
+        tag = elem.tag.rsplit("}", 1)[-1].lower()
+        url = elem.attrib.get("url") or elem.attrib.get("href") or (elem.text.strip() if elem.text else "")
+        media_type = str(elem.attrib.get("type") or "").lower()
+        if tag in {"thumbnail", "content", "enclosure", "image"} and url and (
+            tag in {"thumbnail", "image"} or media_type.startswith("image") or re.search(r"\.(?:jpg|jpeg|png|webp|gif)(?:[?#].*)?$", url, re.I)
+        ):
+            normalized = urllib.parse.urljoin(base_url, url)
+            if normalized.startswith(("http://", "https://")):
+                return normalized
+    return ""
+
+
+def _fetch_article_og_image(article_url):
+    """Fallback to the actual article's Open Graph/Twitter headline image."""
+    if not article_url or not article_url.startswith(("http://", "https://")):
+        return ""
+    now = time.time()
+    with ARTICLE_IMAGE_CACHE_LOCK:
+        cached = ARTICLE_IMAGE_CACHE.get(article_url)
+        if cached:
+            ttl = ARTICLE_IMAGE_CACHE_TTL if cached.get("image") else ARTICLE_IMAGE_NEGATIVE_TTL
+            if now - cached.get("ts", 0) < ttl:
+                return cached.get("image", "")
+    image = ""
+    try:
+        req = urllib.request.Request(
+            article_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36 GamePulseAI-Thumbnail",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "en-US,en;q=0.8",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=1.8) as response:
+            raw = response.read(450_000)
+        parser = _ArticleImageParser()
+        parser.feed(raw.decode("utf-8", errors="ignore"))
+        image = urllib.parse.urljoin(article_url, parser.image) if parser.image else ""
+    except Exception:
+        image = ""
+    with ARTICLE_IMAGE_CACHE_LOCK:
+        ARTICLE_IMAGE_CACHE[article_url] = {"ts": now, "image": image}
+    return image
+
+
+def _resolve_article_image(record):
+    if record.get("image_url") and record["image_url"] != DEFAULT_ARTICLE_IMAGE:
+        return record
+    record["image_url"] = _fetch_article_og_image(record.get("link", "")) or DEFAULT_ARTICLE_IMAGE
+    return record
+
+
+def refresh_article_images(limit=120):
+    """Backfill actual article headline images for rows that still use the generic fallback."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    try:
+        c.execute(
+            "SELECT id, link FROM articles WHERE image_url IS NULL OR image_url = ? OR image_url LIKE 'https://images.unsplash.com/%' LIMIT ?",
+            (DEFAULT_ARTICLE_IMAGE, int(limit)),
+        )
+        rows = c.fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return
+    def resolve(row):
+        return row[0], _fetch_article_og_image(row[1])
+    updates = []
+    with ThreadPoolExecutor(max_workers=min(8, len(rows))) as ex:
+        for article_id, image_url in ex.map(resolve, rows):
+            if image_url:
+                updates.append((image_url, article_id))
+    if updates:
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.executemany("UPDATE articles SET image_url = ? WHERE id = ?", updates)
+            conn.commit()
+        finally:
+            conn.close()
+
 FEEDS = [
     {"url": "https://feeds.ign.com/ign/all", "source": "IGN", "default_cat": "REVIEW"},
     {"url": "https://www.gamespot.com/feeds/reviews/", "source": "GameSpot", "default_cat": "REVIEW"},
@@ -487,60 +594,110 @@ def get_articles(tag=None, search=None, limit=60):
 def run_news_aggregation():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    
+
     for feed in FEEDS:
         try:
             req = urllib.request.Request(
                 feed["url"],
-                headers={"User-Agent": "GamePulseAI/2.0 (Gaming News Bot)"}
+                headers={"User-Agent": "GamePulseAI/4.0 (Gaming News Bot)"},
             )
             with urllib.request.urlopen(req, timeout=3.5) as response:
                 xml_data = response.read()
-                root = ET.fromstring(xml_data)
-                
-                items = root.findall(".//item")
-                if not items:
-                    ns = {"atom": "http://www.w3.org/2005/Atom"}
-                    items = root.findall(".//atom:entry", ns)
-                    
-                for item in items[:8]:
-                    title_elem = item.find("title")
-                    link_elem = item.find("link")
-                    pub_elem = item.find("pubDate") or item.find("published") or item.find("updated")
-                    desc_elem = item.find("description") or item.find("summary")
-                    
-                    title = title_elem.text.strip() if title_elem is not None and title_elem.text else ""
-                    if not title:
-                        continue
-                        
-                    link = link_elem.text.strip() if link_elem is not None and link_elem.text else ""
-                    if not link and link_elem is not None and "href" in link_elem.attrib:
-                        link = link_elem.attrib["href"]
-                        
-                    published = pub_elem.text.strip() if pub_elem is not None and pub_elem.text else datetime.now(timezone.utc).isoformat()
-                    summary = desc_elem.text.strip() if desc_elem is not None and desc_elem.text else ""
-                    summary = re.sub(r'<[^>]+>', '', summary)[:280]
-                    
-                    category = classify_content(title, summary, feed["default_cat"])
-                    image_url = "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=600&q=80"
-                    
-                    score = ""
-                    score_match = re.search(r'\b(10/10|[7-9]\.[0-9]/10|[7-9][0-9]/100)\b', title + " " + summary)
-                    if score_match:
-                        score = score_match.group(1)
-                    elif category == "REVIEW":
-                        score = "Review"
+            root = ET.fromstring(xml_data)
+            items = root.findall(".//item")
+            if not items:
+                ns = {"atom": "http://www.w3.org/2005/Atom"}
+                items = root.findall(".//atom:entry", ns)
 
-                    c.execute("""
-                        INSERT OR IGNORE INTO articles 
-                        (title, link, published, summary, source, category, score, image_url)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (title, link, published, summary, feed["source"], category, score, image_url))
+            records = []
+            for item in items[:8]:
+                title_elem = item.find("title")
+                link_elem = item.find("link")
+                pub_elem = next((item.find(name) for name in ("pubDate", "published", "updated") if item.find(name) is not None), None)
+                desc_elem = next((item.find(name) for name in ("description", "summary") if item.find(name) is not None), None)
+
+                title = title_elem.text.strip() if title_elem is not None and title_elem.text else ""
+                if not title:
+                    continue
+                link = link_elem.text.strip() if link_elem is not None and link_elem.text else ""
+                if not link and link_elem is not None and "href" in link_elem.attrib:
+                    link = link_elem.attrib["href"]
+                if not link:
+                    continue
+                published = pub_elem.text.strip() if pub_elem is not None and pub_elem.text else datetime.now(timezone.utc).isoformat()
+                summary = desc_elem.text.strip() if desc_elem is not None and desc_elem.text else ""
+                summary = re.sub(r"<[^>]+>", "", summary)[:280]
+                category = classify_content(title, summary, feed["default_cat"])
+                rss_image = _extract_rss_image(item, link)
+
+                score = ""
+                score_match = re.search(r"\b(10/10|[7-9]\.[0-9]/10|[7-9][0-9]/100)\b", title + " " + summary)
+                if score_match:
+                    score = score_match.group(1)
+                elif category == "REVIEW":
+                    score = "Review"
+
+                records.append({
+                    "title": title,
+                    "link": link,
+                    "published": published,
+                    "summary": summary,
+                    "source": feed["source"],
+                    "category": category,
+                    "score": score,
+                    "image_url": rss_image or DEFAULT_ARTICLE_IMAGE,
+                })
+
+            # Resolve publisher thumbnails in parallel so feed refresh does not block on sequential
+            # article-page requests. RSS-provided images win; Open Graph is the fallback.
+            missing = [r for r in records if r["image_url"] == DEFAULT_ARTICLE_IMAGE]
+            if missing:
+                with ThreadPoolExecutor(max_workers=min(8, len(missing))) as ex:
+                    for record in ex.map(_resolve_article_image, missing):
+                        pass
+
+            for record in records:
+                c.execute("""
+                    INSERT OR IGNORE INTO articles
+                    (title, link, published, summary, source, category, score, image_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    record["title"], record["link"], record["published"], record["summary"],
+                    record["source"], record["category"], record["score"], record["image_url"],
+                ))
             conn.commit()
         except Exception:
             continue
-            
+
     conn.close()
+    # Backfill existing rows asynchronously through the scheduler's next pass without changing
+    # the dashboard/card markup.
+    try:
+        refresh_article_images(limit=120)
+    except Exception:
+        pass
+
+def start_metacritic_warmup():
+    """Warm DNS, the public API key and the current-year finder cache off the request path."""
+    def warm():
+        try:
+            _resolve_dns("backend.metacritic.com")
+            _resolve_dns("www.metacritic.com")
+            _discover_metacritic_api_key()
+            _browse_metacritic_games(year_min=CURRENT_YEAR, year_max=CURRENT_YEAR, limit=10, offset=0)
+        except Exception:
+            pass
+    threading.Thread(target=warm, daemon=True, name="metacritic-warmup").start()
+
+
+def start_thumbnail_warmup():
+    def warm():
+        try:
+            refresh_article_images(limit=120)
+        except Exception:
+            pass
+    threading.Thread(target=warm, daemon=True, name="article-thumbnail-warmup").start()
+
 
 def start_background_scheduler():
     def loop():
@@ -1410,6 +1567,17 @@ PULSAR_SESSION_TTL = 60 * 60 * 8
 METACRITIC_CACHE = {}
 METACRITIC_CACHE_LOCK = threading.RLock()
 METACRITIC_CACHE_TTL = 60 * 10
+METACRITIC_NEGATIVE_CACHE_TTL = 15
+METACRITIC_DETAIL_CACHE_TTL = 60 * 60
+METACRITIC_API_BASE = os.environ.get("METACRITIC_API_BASE", "https://backend.metacritic.com").rstrip("/")
+# Prefer an environment-provided key, but discover the current public web key from Metacritic
+# when it rotates. This avoids baking a stale credential into the application.
+METACRITIC_API_KEY = os.environ.get("METACRITIC_API_KEY", "").strip()
+METACRITIC_DISCOVERED_KEY = None
+METACRITIC_DISCOVERY_LOCK = threading.RLock()
+METACRITIC_DNS_CACHE = {}
+METACRITIC_DNS_LOCK = threading.RLock()
+METACRITIC_DNS_TTL = 300
 
 PLATFORM_ALIASES = {
     "pc": ["pc", "steam", "windows"],
@@ -1449,6 +1617,9 @@ GENRE_ALIASES = {
     "stealth": ["stealth", "stealth game"],
     "metroidvania": ["metroidvania"],
     "cozy": ["cozy", "cosy"],
+    "story-rich": ["story-rich", "story rich", "narrative", "story driven", "story-driven"],
+    "open-world": ["open-world", "open world"],
+    "single-player": ["single-player", "single player"],
 }
 
 
@@ -1663,115 +1834,351 @@ def _metacritic_year_url(year, platform=None):
 
 
 def _metacritic_current_url():
-    return "https://www.metacritic.com/browse/game/all/all/current-year/?page=1"
+    return "https://www.metacritic.com/browse/game/all/all/current-year/metascore/"
 
 
 def _metacritic_all_time_url():
-    return "https://www.metacritic.com/browse/game/all/all/all-time/metascore/?page=1"
+    return "https://www.metacritic.com/browse/game/"
 
 
 def _metacritic_game_url(title):
-    # Best-effort slug for links; factual claims only use verified local/live scores.
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
     return f"https://www.metacritic.com/game/{slug}/"
 
 
-class _MetaTextParser(ET.Element):
-    pass
+def _resolve_dns(hostname, force=False):
+    """Resolve Metacritic DNS once and cache it briefly. The actual HTTP request still
+    uses the hostname so TLS/SNI and certificate validation remain correct."""
+    now = time.time()
+    with METACRITIC_DNS_LOCK:
+        cached = METACRITIC_DNS_CACHE.get(hostname)
+        if cached and not force and now - cached["ts"] < METACRITIC_DNS_TTL:
+            return cached["addresses"]
+    try:
+        addresses = sorted({info[4][0] for info in socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)})
+    except (socket.gaierror, OSError):
+        addresses = []
+    with METACRITIC_DNS_LOCK:
+        METACRITIC_DNS_CACHE[hostname] = {"ts": now, "addresses": addresses}
+    return addresses
 
 
-def _fetch_metacritic_html(url, timeout=1.8):
-    cache_key = url
+def _discover_metacritic_api_key(force=False):
+    global METACRITIC_DISCOVERED_KEY
+    if METACRITIC_API_KEY:
+        return METACRITIC_API_KEY
+    with METACRITIC_DISCOVERY_LOCK:
+        if METACRITIC_DISCOVERED_KEY and not force:
+            return METACRITIC_DISCOVERED_KEY
+        urls = ["https://www.metacritic.com/", "https://www.metacritic.com/game/"]
+        for page_url in urls:
+            try:
+                _resolve_dns(urllib.parse.urlparse(page_url).hostname or "www.metacritic.com")
+                req = urllib.request.Request(
+                    page_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36 GamePulseAI",
+                        "Accept": "text/html,application/xhtml+xml",
+                        "Accept-Language": "en-US,en;q=0.8",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=1.7) as response:
+                    html_bytes = response.read(350_000)
+                text = html_bytes.decode("utf-8", errors="ignore")
+                match = re.search(r"backend\.metacritic\.com[^\"' ]*apiKey=([A-Za-z0-9]+)", text)
+                if not match:
+                    match = re.search(r"apiKey=([A-Za-z0-9]{20,})", text)
+                if match:
+                    METACRITIC_DISCOVERED_KEY = match.group(1)
+                    return METACRITIC_DISCOVERED_KEY
+            except Exception:
+                continue
+    return None
+
+
+def _metacritic_api_url(path, **params):
+    q = dict(params)
+    key = _discover_metacritic_api_key()
+    if key:
+        q.setdefault("apiKey", key)
+    return f"{METACRITIC_API_BASE}/{path.lstrip('/')}?{urllib.parse.urlencode(q)}"
+
+
+def _fetch_json_cached(url, timeout=1.8, ttl=METACRITIC_CACHE_TTL):
     now = time.time()
     with METACRITIC_CACHE_LOCK:
-        cached = METACRITIC_CACHE.get(cache_key)
-        if cached and now - cached["ts"] < METACRITIC_CACHE_TTL:
-            return cached["value"]
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 GamePulseAI/3.0 (compatible; GamePulse/3.0)",
-                "Accept": "text/html,application/xhtml+xml",
-                "Accept-Language": "en-US,en;q=0.8",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as response:
-            raw = response.read(900_000)
-        value = raw.decode("utf-8", errors="ignore")
-    except Exception:
-        value = None
+        cached = METACRITIC_CACHE.get(url)
+        if cached:
+            cached_ttl = ttl if cached.get("value") is not None else METACRITIC_NEGATIVE_CACHE_TTL
+            if now - cached["ts"] < cached_ttl:
+                return cached["value"]
+
+    value = None
+    response_status = None
+    parsed_url = urllib.parse.urlparse(url)
+    host = parsed_url.hostname or ""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/154 Safari/537.36 GamePulseAI/4.0",
+        "Accept": "application/json,text/plain,*/*",
+        "Accept-Language": "en-US,en;q=0.8",
+        "Origin": "https://www.metacritic.com",
+        "Referer": "https://www.metacritic.com/",
+        "Cache-Control": "no-cache",
+    }
+
+    for attempt in range(2):
+        try:
+            # Explicitly exercise the host's DNS resolution before the request. This makes
+            # transient resolver failures visible and retryable rather than silently falling
+            # through to a fake/local ranking.
+            addresses = _resolve_dns(host, force=(attempt == 1)) if host else []
+            if host and not addresses:
+                continue
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                response_status = getattr(response, "status", 200)
+                raw = response.read(1_250_000)
+                if response_status != 200:
+                    raise urllib.error.HTTPError(url, response_status, "Metacritic API HTTP error", response.headers, None)
+                value = json.loads(raw.decode("utf-8", errors="ignore"))
+                break
+        except urllib.error.HTTPError as exc:
+            response_status = exc.code
+            if exc.code in (401, 403) and host.endswith("metacritic.com") and not METACRITIC_API_KEY and attempt == 0:
+                key = _discover_metacritic_api_key(force=True)
+                if key:
+                    parsed = urllib.parse.parse_qs(parsed_url.query, keep_blank_values=True)
+                    parsed["apiKey"] = [key]
+                    rebuilt_query = urllib.parse.urlencode(parsed, doseq=True)
+                    url = urllib.parse.urlunparse(parsed_url._replace(query=rebuilt_query))
+                    continue
+            break
+        except (socket.gaierror, TimeoutError, socket.timeout, urllib.error.URLError, OSError, ValueError):
+            if attempt == 0:
+                time.sleep(0.04)
+                continue
+            break
+        except Exception:
+            break
+
     with METACRITIC_CACHE_LOCK:
-        METACRITIC_CACHE[cache_key] = {"ts": now, "value": value}
+        METACRITIC_CACHE[url] = {"ts": now, "value": value, "status": response_status}
     return value
 
 
-def _html_to_text(raw_html):
-    if not raw_html:
-        return ""
-    # Keep the dependency footprint at zero: strip scripts/styles first, then tags.
-    cleaned = re.sub(r"<script[^>]*>.*?</script>", " ", raw_html, flags=re.I | re.S)
-    cleaned = re.sub(r"<style[^>]*>.*?</style>", " ", cleaned, flags=re.I | re.S)
-    cleaned = re.sub(r"<br\s*/?>", " ", cleaned, flags=re.I)
-    cleaned = re.sub(r"</(?:div|li|p|h1|h2|h3|section|article|a|span|main)>", " ", cleaned, flags=re.I)
-    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
-    cleaned = html.unescape(cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    return cleaned.strip()
+def _parse_finder_item(item):
+    if not isinstance(item, dict):
+        return None
+    summary = item.get("criticScoreSummary") or {}
+    score = summary.get("score")
+    if score is None:
+        return None
+    try:
+        score = int(score)
+    except (TypeError, ValueError):
+        return None
+    genres = []
+    for genre in item.get("genres") or []:
+        if isinstance(genre, dict):
+            name = genre.get("name") or genre.get("displayName") or genre.get("slug")
+        else:
+            name = str(genre)
+        if name:
+            genres.append(str(name).strip())
+    platforms = []
+    for platform in item.get("platforms") or item.get("gamePlatforms") or []:
+        if isinstance(platform, dict):
+            name = platform.get("name") or platform.get("displayName") or platform.get("slug")
+        else:
+            name = str(platform)
+        if name:
+            platforms.append(str(name).strip())
+    return {
+        "title": str(item.get("title") or "").strip(),
+        "score": score,
+        "year": item.get("premiereYear"),
+        "slug": item.get("slug"),
+        "critic_reviews": summary.get("reviewCount"),
+        "user_score": (item.get("userScore") or {}).get("score") if isinstance(item.get("userScore"), dict) else item.get("userScore"),
+        "genres": _dedupe_preserve(genres),
+        "platforms": _dedupe_preserve(platforms),
+    }
 
 
-def _parse_metacritic_rankings(raw_html, limit=10):
-    text = _html_to_text(raw_html)
-    if not text:
-        return []
-    date_pattern = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4}"
-    matches = list(re.finditer(rf"\b(\d+)\.\s+(.+?)\s+({date_pattern})", text))
-    out = []
-    seen = set()
-    for idx, m in enumerate(matches):
-        rank = int(m.group(1))
-        if rank > 200:
+def _browse_metacritic_games(year_min=None, year_max=None, limit=24, offset=0):
+    params = {
+        "sortBy": "META_SCORE",
+        "sortDirection": "DESC",
+        "mcoTypeId": 13,
+        "offset": offset,
+        "limit": min(max(1, int(limit)), 50),
+        "componentName": "finder",
+        "componentType": "Finder",
+    }
+    if year_min is not None:
+        params["releaseYearMin"] = int(year_min)
+    if year_max is not None:
+        params["releaseYearMax"] = int(year_max)
+    url = _metacritic_api_url("finder/metacritic/web", **params)
+    data = _fetch_json_cached(url)
+    try:
+        items = data["data"]["items"]
+    except (TypeError, KeyError):
+        return [], False, url
+    parsed = []
+    for item in items:
+        parsed_item = _parse_finder_item(item)
+        if parsed_item and parsed_item["title"]:
+            parsed.append(parsed_item)
+    return parsed, bool(parsed), url
+
+
+def _fetch_metacritic_game_detail(slug):
+    if not slug:
+        return None
+    url = _metacritic_api_url(
+        f"games/metacritic/{urllib.parse.quote(str(slug), safe='-')} /web".replace(" ", ""),
+        componentName="product",
+        componentType="Product",
+    )
+    data = _fetch_json_cached(url, ttl=METACRITIC_DETAIL_CACHE_TTL)
+    try:
+        item = data["data"]["item"]
+        platforms = []
+        for platform in item.get("platforms") or []:
+            name = platform.get("name")
+            if name:
+                platforms.append({
+                    "name": name,
+                    "slug": platform.get("slug"),
+                    "metascore": (platform.get("criticScoreSummary") or {}).get("score"),
+                    "critic_reviews": (platform.get("criticScoreSummary") or {}).get("reviewCount"),
+                    "release_date": platform.get("releaseDate"),
+                })
+        genres = []
+        for genre in item.get("genres") or []:
+            if isinstance(genre, dict):
+                name = genre.get("name") or genre.get("displayName") or genre.get("slug")
+            else:
+                name = str(genre)
+            if name:
+                genres.append(str(name).strip())
+        developers = []
+        publishers = []
+        for person in item.get("developers") or []:
+            if isinstance(person, dict):
+                name = person.get("name") or person.get("title")
+            else:
+                name = str(person)
+            if name:
+                developers.append(str(name).strip())
+        for person in item.get("publishers") or []:
+            if isinstance(person, dict):
+                name = person.get("name") or person.get("title")
+            else:
+                name = str(person)
+            if name:
+                publishers.append(str(name).strip())
+        return {
+            "title": item.get("title"),
+            "slug": item.get("slug") or slug,
+            "release_date": item.get("releaseDate"),
+            "platform": item.get("platform"),
+            "platforms": platforms,
+            "score": (item.get("criticScoreSummary") or {}).get("score"),
+            "critic_reviews": (item.get("criticScoreSummary") or {}).get("reviewCount"),
+            "genres": _dedupe_preserve(genres),
+            "developers": _dedupe_preserve(developers),
+            "publishers": _dedupe_preserve(publishers),
+        }
+    except (TypeError, KeyError):
+        return None
+
+
+def _game_matches_platform(detail, platform):
+    aliases = PLATFORM_ALIASES.get(platform.lower(), [platform.lower()])
+    for p in detail.get("platforms") or []:
+        name = str(p.get("name") or "").lower()
+        slug = str(p.get("slug") or "").lower()
+        if any(alias.lower() in name or alias.lower() in slug for alias in aliases):
+            return True
+    lead = str(detail.get("platform") or "").lower()
+    return any(alias.lower() in lead for alias in aliases)
+
+
+def _filter_live_by_platform(items, platform, target_count=5):
+    if not platform:
+        return items[:target_count]
+    filtered = []
+    # Prefer local platform metadata when available; otherwise verify the Metacritic product record.
+    for item in items[:24]:
+        local = _find_local_for_live_item(item.get("title", ""), item.get("year"))
+        if local and any(platform.lower() in p.lower() for p in str(local.get("platforms", "")).split(",")):
+            item["local"] = local
+            filtered.append(item)
             continue
-        title = re.sub(r"\s+", " ", m.group(2)).strip(" •|-")
-        if not title or len(title) > 140:
-            continue
-        end = matches[idx + 1].start() if idx + 1 < len(matches) else min(len(text), m.end() + 1200)
-        segment = text[m.end():end]
-        score_match = re.search(r"\b(100|[1-9]\d)\s+Metascore\b", segment)
-        if not score_match:
-            continue
-        score = int(score_match.group(1))
-        key = title.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append({"rank": rank, "title": title, "score": score})
-        if len(out) >= limit:
+        detail = _fetch_metacritic_game_detail(item.get("slug"))
+        if detail and _game_matches_platform(detail, platform):
+            item["detail"] = detail
+            filtered.append(item)
+        if len(filtered) >= target_count:
             break
-    return out
+    return filtered[:target_count]
 
 
 def fetch_metacritic_year(year, platform=None, limit=10):
-    url = _metacritic_year_url(year, platform)
-    raw = _fetch_metacritic_html(url)
-    parsed = _parse_metacritic_rankings(raw, limit=limit)
-    if not parsed:
-        return [], False, url
-    return parsed, True, url
+    # Pull more candidates when platform filtering is requested, then verify platforms as needed.
+    candidates, ok, url = _browse_metacritic_games(year_min=year, year_max=year, limit=30 if platform else limit)
+    if not ok:
+        return [], False, _metacritic_year_url(year, platform)
+    for item in candidates:
+        item["year"] = year
+    selected = _filter_live_by_platform(candidates, platform, target_count=limit) if platform else candidates[:limit]
+    return selected, bool(selected), url
 
 
-def fetch_metacritic_current(limit=10):
-    url = _metacritic_current_url()
-    raw = _fetch_metacritic_html(url)
-    parsed = _parse_metacritic_rankings(raw, limit=limit)
-    return parsed, bool(parsed), url
+def fetch_metacritic_current(limit=10, platform=None):
+    candidates, ok, url = _browse_metacritic_games(year_min=CURRENT_YEAR, year_max=CURRENT_YEAR, limit=30 if platform else limit)
+    if not ok:
+        return [], False, _metacritic_current_url()
+    for item in candidates:
+        item["year"] = CURRENT_YEAR
+    selected = _filter_live_by_platform(candidates, platform, target_count=limit) if platform else candidates[:limit]
+    return selected, bool(selected), url
 
 
-def fetch_metacritic_all_time(limit=10):
-    url = _metacritic_all_time_url()
-    raw = _fetch_metacritic_html(url)
-    parsed = _parse_metacritic_rankings(raw, limit=limit)
-    return parsed, bool(parsed), url
+def fetch_metacritic_all_time(limit=10, platform=None):
+    candidates, ok, url = _browse_metacritic_games(limit=30)
+    if not ok:
+        return [], False, _metacritic_all_time_url()
+    selected = _filter_live_by_platform(candidates, platform, target_count=limit) if platform else candidates[:limit]
+    return selected, bool(selected), url
+
+
+def fetch_metacritic_search(query, limit=8):
+    q = urllib.parse.quote(query.strip())
+    url = _metacritic_api_url(
+        f"finder/metacritic/search/{q}/web",
+        offset=0,
+        limit=min(max(1, limit), 30),
+        sortBy="META_SCORE",
+        sortDirection="DESC",
+        mcoTypeId=13,
+        componentName="search",
+        componentType="SearchResult",
+    )
+    data = _fetch_json_cached(url)
+    try:
+        items = data["data"]["items"]
+    except (TypeError, KeyError):
+        return []
+    out = []
+    for item in items:
+        parsed = _parse_finder_item(item)
+        if parsed:
+            parsed["slug"] = item.get("slug")
+            out.append(parsed)
+    return out
 
 
 def _local_year_games(year):
@@ -1842,6 +2249,9 @@ def get_year_response(year, min_score=None, pref_platform=None):
             enriched["year"] = year
             if local:
                 enriched["local"] = local
+            detail = item.get("detail") or {}
+            if detail.get("platforms") and not enriched.get("platforms"):
+                enriched["platforms"] = ", ".join(p.get("name", "") for p in detail.get("platforms", []) if p.get("name"))
             games.append(enriched)
         title = f"Top Metacritic Games of {year}"
         if pref_platform:
@@ -1901,6 +2311,7 @@ def get_period_response(start_year, end_year, pref_platform=None):
     except Exception:
         gathered = []
 
+    gathered_live = bool(gathered)
     if not gathered:
         for y in range(start_year, end_year + 1):
             for g in _local_year_games(y):
@@ -1912,7 +2323,8 @@ def get_period_response(start_year, end_year, pref_platform=None):
         deduped.setdefault(key, g)
     games = list(deduped.values())[:10]
     source_url = _metacritic_year_url(end_year, pref_platform)
-    return _format_ranked_games(f"Highest-Rated Games from {start_year}–{end_year}", games, source_url, "Metacritic", pref_platform)
+    label = "Metacritic" if gathered_live else "Indexed Metacritic dataset"
+    return _format_ranked_games(f"Highest-Rated Games from {start_year}–{end_year}", games, source_url, label, pref_platform)
 
 
 def format_decade_response(pref_platform=None):
@@ -1956,24 +2368,56 @@ def format_all_time_response(pref_platform=None):
 
 
 def find_game_across_databases(name):
-    """Factual game resolution against the app's indexed catalogue only.
-    Exact and high-confidence fuzzy matches are allowed; otherwise return None.
+    """Resolve a game from the local catalogue first, then Metacritic's structured search.
+    Low-confidence matches are rejected so Pulsar never turns a guess into a factual claim.
     """
     name_clean = re.sub(r"\s+", " ", str(name).strip().lower())
     if not name_clean:
         return None
-    # Exact match first.
+    # Exact local match.
     for year, games in ALL_YEARS_DATABASE.items():
         for g in games:
             if name_clean == g["title"].strip().lower():
                 return dict(g, year=year)
-    # Obvious contained title match for natural-language requests.
+    # Obvious local containment.
     for year, games in ALL_YEARS_DATABASE.items():
         for g in games:
             title_clean = g["title"].strip().lower()
             if len(name_clean) >= 5 and (name_clean in title_clean or title_clean in name_clean):
                 return dict(g, year=year)
-    # Conservative fuzzy matching; never use a low-confidence match for factual claims.
+    # Live Metacritic search, exact-ish first result only.
+    try:
+        results = fetch_metacritic_search(name, limit=8)
+    except Exception:
+        results = []
+    if results:
+        best = None
+        best_ratio = 0.0
+        for item in results:
+            ratio = difflib.SequenceMatcher(None, name_clean, item["title"].lower()).ratio()
+            if name_clean == item["title"].lower():
+                best = item
+                best_ratio = 1.0
+                break
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best = item
+        if best and best_ratio >= 0.78:
+            detail = _fetch_metacritic_game_detail(best.get("slug"))
+            platforms = ""
+            if detail:
+                platforms = ", ".join(p.get("name", "") for p in detail.get("platforms", []) if p.get("name"))
+            return {
+                "title": best["title"],
+                "score": best.get("score"),
+                "year": best.get("year"),
+                "platforms": platforms or (detail.get("platform") if detail else ""),
+                "genre": "",
+                "desc": "",
+                "slug": best.get("slug"),
+                "live": True,
+            }
+    # Conservative fuzzy local matching only.
     best = None
     best_ratio = 0.86
     for year, games in ALL_YEARS_DATABASE.items():
@@ -2028,6 +2472,422 @@ def _extract_score_floor(text):
     return int(m.group(1)) if m else None
 
 
+RANKING_TERMS = {
+    "best", "top", "highest rated", "highest-rated", "highest", "best rated", "best-rated",
+    "greatest", "ranked", "ranking", "rankings", "most acclaimed", "most highly rated",
+    "best reviewed", "highest scoring", "highest-scored", "top rated", "top-rated",
+    "show me", "give me", "what are", "what're", "which are", "list", "recommend",
+}
+
+GENRE_FAMILY_ALIASES = {
+    "platformer": ["platformer", "platformers", "platforming", "platform game", "platform games", "2d platformer", "3d platformer", "3d platformers", "2d platformers", "2d platform games", "3d platform games", "jump and run", "jump-and-run"],
+    "rpg": ["rpg", "role playing", "role-playing", "role playing games", "role-playing games"],
+    "jrpg": ["jrpg", "japanese rpg", "japanese role playing"],
+    "crpg": ["crpg", "computer rpg", "computer role playing"],
+    "action rpg": ["action rpg", "action-rpg", "action role playing"],
+    "soulslike": ["soulslike", "souls-like", "souls like", "soulsborne"],
+    "fps": ["fps", "first person shooter", "first-person shooter", "first person shooters", "shooters"],
+    "horror": ["horror", "survival horror", "psychological horror", "horror games"],
+    "strategy": ["strategy", "strategy games", "4x", "rts", "real-time strategy", "turn based strategy", "turn-based strategy"],
+    "roguelike": ["roguelike", "roguelite", "rogue-like", "rogue-lite", "rogue like"],
+    "deckbuilder": ["deckbuilder", "deck builder", "card battler", "card-based"],
+    "racing": ["racing", "racing games", "racer", "racing game"],
+    "fighting": ["fighting", "fighting games", "fighter", "fighting game"],
+    "stealth": ["stealth", "stealth games", "stealth game"],
+    "metroidvania": ["metroidvania", "metroidvanias"],
+    "open-world": ["open world", "open-world", "open world games", "open-world games"],
+    "cozy": ["cozy", "cosy", "cozy games", "cozy game"],
+    "survival": ["survival", "survival games", "survival game"],
+    "adventure": ["adventure", "adventure games", "action adventure", "action-adventure"],
+    "simulation": ["simulation", "sim", "simulator", "simulation games"],
+    "sports": ["sports", "sports games", "sport game"],
+    "puzzle": ["puzzle", "puzzle games", "puzzle game"],
+    "sandbox": ["sandbox", "sandbox games", "sandbox game"],
+}
+
+
+def _normalize_search_text(text):
+    text = re.sub(r"[’'`]", " ", text.lower())
+    text = text.replace("–", "-").replace("—", "-")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _extract_genre(text):
+    low = _normalize_search_text(text)
+    # Longest aliases first so "action rpg" wins over generic "rpg".
+    candidates = []
+    for canonical, aliases in GENRE_FAMILY_ALIASES.items():
+        for alias in aliases:
+            if re.search(r"\b" + re.escape(alias) + r"\b", low):
+                candidates.append((len(alias), canonical))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda x: x[0])[1]
+
+
+def _extract_result_limit(text):
+    low = _normalize_search_text(text)
+    patterns = [
+        r"\btop\s+(\d{1,2})\b",
+        r"\b(?:show|give|list|find)\s+(?:me\s+)?(?:the\s+)?(\d{1,2})\b",
+        r"\b(\d{1,2})\s+(?:best|top|highest)\b",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, low)
+        if m:
+            return max(1, min(20, int(m.group(1))))
+    return 5
+
+
+def _extract_relative_period(text):
+    low = _normalize_search_text(text)
+    # "last/past N years" means N calendar release years ending in the current year.
+    m = re.search(r"\b(?:last|past|previous)\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s+years?\b", low)
+    if m:
+        word_numbers = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}
+        token = m.group(1)
+        n = word_numbers.get(token, int(token) if token.isdigit() else 10)
+        n = max(1, min(50, n))
+        return CURRENT_YEAR - n, CURRENT_YEAR
+    if re.search(r"\b(?:last|past|previous|preceding)\s+decade\b", low) or re.search(r"\b(?:last|past|previous)\s+(?:10|ten)\s+years?\b", low):
+        return CURRENT_YEAR - 10, CURRENT_YEAR
+    if re.search(r"\bthis\s+decade\b", low):
+        return CURRENT_YEAR // 10 * 10, CURRENT_YEAR
+    return None
+
+
+def _extract_ranking_scope(text):
+    low = _normalize_search_text(text)
+    explicit_range = _extract_year_range(low)
+    if explicit_range:
+        return explicit_range[0], min(explicit_range[1], CURRENT_YEAR)
+    relative = _extract_relative_period(low)
+    if relative:
+        return relative
+    # Named decades: "1990s", "90s", "the 2000s".
+    m = re.search(r"\b(?:the\s+)?((?:19|20)?\d{2})s\b", low)
+    if m:
+        token = m.group(1)
+        if len(token) == 2:
+            decade = 1900 + int(token) if int(token) >= 70 else 2000 + int(token)
+        else:
+            decade = int(token)
+        return decade, min(decade + 9, CURRENT_YEAR)
+    year = _extract_year(low)
+    if year is not None:
+        return year, min(year, CURRENT_YEAR)
+    return None
+
+
+def _is_ranking_intent(text):
+    low = _normalize_search_text(text)
+    if any(phrase in low for phrase in [
+        "best", "top", "highest rated", "highest-rated", "most acclaimed", "best rated", "best-rated",
+        "greatest", "ranked", "ranking", "rankings", "most highly rated", "best reviewed", "highest scoring",
+        "highest-scored", "top rated", "top-rated", "what are the best", "what're the best", "show me the best",
+    ]):
+        return True
+    scope_words = any(k in low for k in [
+        "on switch", "on pc", "on ps5", "on xbox", "platformers", "rpg", "fps", "horror", "racing",
+        "last decade", "past decade", "previous decade", "last ten years", "past ten years", "last ", "past ",
+        "from 19", "from 20", "between 19", "between 20", "in the 19", "in the 20", "this year",
+        "right now", "currently",
+    ])
+    if any(k in low for k in ["recommend", "recommendations", "suggest", "show me", "give me", "list", "which", "what games"]) and scope_words:
+        if not any(k in low for k in ["games like", "similar to", "fans of"]):
+            return True
+    return bool(re.search(r"\b(?:score|metacritic)\b", low) and any(k in low for k in ["games", "titles", "releases", "from", "of", "in"]))
+
+
+def _ranking_filters(text, mem=None):
+    low = _normalize_search_text(text)
+    platform = _extract_platform(text)
+    if not platform and any(k in low for k in ["my platform", "my console", "on my system", "for my console"]):
+        platform = (mem or {}).get("platforms", [None])[0]
+    genre = _extract_genre(text)
+    start_year, end_year = _extract_ranking_scope(text) or (None, None)
+    limit = _extract_result_limit(text)
+    score_floor = _extract_score_floor(text)
+    current_hint = any(k in low for k in ["right now", "out right now", "currently", "currently available", "this year", "current year", "latest releases"])
+    all_time_hint = any(k in low for k in ["all time", "all-time", "ever", "in history", "of history", "throughout history"])
+    return {
+        "platform": platform,
+        "genre": genre,
+        "start_year": start_year,
+        "end_year": end_year,
+        "limit": limit,
+        "score_floor": score_floor,
+        "current": current_hint,
+        "all_time": all_time_hint,
+    }
+
+
+def _genre_tokens_for_record(record):
+    values = []
+    values.extend(record.get("genres") or [])
+    local = record.get("local") or {}
+    if local.get("genre"):
+        values.append(local.get("genre"))
+    if record.get("genre"):
+        values.append(record.get("genre"))
+    return _normalize_search_text(" | ".join(map(str, values)))
+
+
+def _genre_matches(record, requested):
+    if not requested:
+        return True
+    text = _genre_tokens_for_record(record)
+    aliases = GENRE_FAMILY_ALIASES.get(requested, [requested])
+    if any(re.search(r"\b" + re.escape(alias) + r"\b", text) for alias in aliases):
+        return True
+    # Curated local archetype knowledge can confirm a genre when live metadata uses a different label.
+    title = _normalize_search_text(record.get("title", ""))
+    for arch in ALL_ARCHETYPES:
+        if requested not in (arch.get("title", "").lower()) and not any(requested == g for g in GENRE_FAMILY_ALIASES if g in arch.get("title", "").lower()):
+            continue
+        if any(_normalize_search_text(g.get("title", "")) == title for g in arch.get("games", [])):
+            return True
+    return False
+
+
+def _record_platform_score(record, platform):
+    if not platform:
+        return record.get("score")
+    aliases = PLATFORM_ALIASES.get(platform.lower(), [platform.lower()])
+    detail = record.get("detail") or {}
+    for p in detail.get("platforms") or []:
+        name = str(p.get("name") or "").lower()
+        slug = str(p.get("slug") or "").lower()
+        if any(alias.lower() in name or alias.lower() in slug for alias in aliases):
+            score = p.get("metascore")
+            if score is not None:
+                return int(score)
+    return None
+
+
+def _record_matches_platform(record, platform):
+    if not platform:
+        return True
+    aliases = PLATFORM_ALIASES.get(platform.lower(), [platform.lower()])
+    local = record.get("local") or {}
+    local_platforms = str(local.get("platforms") or record.get("platforms") or "").lower()
+    if local_platforms and any(alias.lower() in local_platforms for alias in aliases):
+        return True
+    detail = record.get("detail") or {}
+    return _game_matches_platform(detail, platform)
+
+
+def _candidate_pages_for_scope(start_year=None, end_year=None, max_pages=3):
+    offsets = [i * 50 for i in range(max_pages)]
+    def one(offset):
+        items, ok, url = _browse_metacritic_games(year_min=start_year, year_max=end_year, limit=50, offset=offset)
+        return offset, items, ok, url
+    out = []
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=min(4, len(offsets))) as ex:
+            futures = [ex.submit(one, offset) for offset in offsets]
+            for fut in as_completed(futures):
+                out.append(fut.result())
+    except Exception:
+        for offset in offsets:
+            out.append(one(offset))
+    items = []
+    ok_any = False
+    url = _metacritic_all_time_url() if start_year is None and end_year is None else _metacritic_year_url(end_year or start_year)
+    for offset, page, ok, page_url in sorted(out, key=lambda x: x[0]):
+        if ok:
+            ok_any = True
+            url = page_url
+            items.extend(page)
+    return items, ok_any, url
+
+
+def _grounded_local_candidates(start_year=None, end_year=None, genre=None, platform=None):
+    if start_year is None:
+        years = sorted(ALL_YEARS_DATABASE.keys())
+    else:
+        years = range(start_year, (end_year if end_year is not None else start_year) + 1)
+    out = []
+    for year in years:
+        for g in _local_year_games(year):
+            record = dict(g, year=year)
+            if genre and not _genre_matches(record, genre):
+                continue
+            if platform and not _record_matches_platform(record, platform):
+                continue
+            out.append(record)
+    out.sort(key=lambda g: (-int(g.get("score") or 0), int(g.get("year") or 0), g.get("title", "").lower()))
+    return out
+
+
+def get_filtered_ranking_response(filters):
+    platform = filters.get("platform")
+    genre = filters.get("genre")
+    start_year = filters.get("start_year")
+    end_year = filters.get("end_year")
+    limit = int(filters.get("limit") or 5)
+    score_floor = filters.get("score_floor")
+    current = filters.get("current")
+    all_time = filters.get("all_time")
+
+    if start_year is None and end_year is None and not all_time:
+        if current:
+            start_year = end_year = CURRENT_YEAR
+        else:
+            all_time = True
+
+    if start_year is not None and start_year > CURRENT_YEAR:
+        return (f"I don't have released Metacritic results for **{start_year}** or later because that is in the future. I won't invent a ranking. "
+                f"[Open Metacritic]({_metacritic_current_url()})", [])
+    if end_year is not None and end_year > CURRENT_YEAR:
+        end_year = CURRENT_YEAR
+    if start_year is not None:
+        start_year = max(1984, start_year)
+    if end_year is not None:
+        end_year = min(CURRENT_YEAR, end_year)
+    if start_year is not None and end_year is not None and start_year > end_year:
+        return "That release-year range is not valid. I won't guess what you intended.", []
+
+    # Live Metacritic finder: use score-sorted pages, then apply genre/platform filters locally.
+    scope_pages = 1
+    if genre and platform:
+        scope_pages = 6
+    elif genre or platform:
+        scope_pages = 4
+    live_candidates, live_ok, source_url = _candidate_pages_for_scope(start_year, end_year, max_pages=scope_pages)
+    enriched = []
+    seen = set()
+    prepared = []
+    for item in live_candidates:
+        title_key = _normalize_search_text(item.get("title", ""))
+        if not title_key or title_key in seen:
+            continue
+        seen.add(title_key)
+        item["year"] = item.get("year") or start_year
+        # Cheap genre filter first. Finder metadata includes genres on the current Metacritic backend;
+        # if absent, the detail fetch below will supply authoritative genre metadata.
+        if genre and not _genre_matches(item, genre) and item.get("genres"):
+            continue
+        if genre and not item.get("genres"):
+            detail = _fetch_metacritic_game_detail(item.get("slug"))
+            if not detail or not _genre_matches({**item, "genres": detail.get("genres", [])}, genre):
+                continue
+            item["detail"] = detail
+            item["genres"] = detail.get("genres", [])
+        prepared.append(item)
+        if len(prepared) >= max(limit * 12, 60):
+            break
+
+    def enrich_platform(item):
+        detail = item.get("detail") or _fetch_metacritic_game_detail(item.get("slug"))
+        if not detail:
+            return None
+        record = dict(item)
+        record["detail"] = detail
+        record["genres"] = record.get("genres") or detail.get("genres", [])
+        record["platforms"] = ", ".join(p.get("name", "") for p in detail.get("platforms", []) if p.get("name"))
+        if not _record_matches_platform(record, platform):
+            return None
+        score = _record_platform_score(record, platform)
+        if score is None:
+            # Never substitute a lead-platform score when the requested platform's score is missing.
+            return None
+        record["rank_score"] = score
+        return record
+
+    if platform:
+        # Resolve product records concurrently in small batches and stop as soon as we have enough
+        # verified matches. This keeps common filtered questions fast while remaining exhaustive enough
+        # for sparse platform filters.
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            for batch_start in range(0, len(prepared), 12):
+                batch = prepared[batch_start:batch_start + 12]
+                with ThreadPoolExecutor(max_workers=min(12, len(batch))) as ex:
+                    for record in ex.map(enrich_platform, batch):
+                        if record:
+                            if score_floor is None or record["rank_score"] >= score_floor:
+                                enriched.append(record)
+                if len(enriched) >= max(limit, 5):
+                    break
+        except Exception:
+            for item in prepared:
+                record = enrich_platform(item)
+                if record and (score_floor is None or record["rank_score"] >= score_floor):
+                    enriched.append(record)
+                if len(enriched) >= max(limit, 5):
+                    break
+    else:
+        for item in prepared:
+            if score_floor is not None and int(item.get("score") or 0) < score_floor:
+                continue
+            item["rank_score"] = item.get("score")
+            enriched.append(item)
+            if len(enriched) >= max(limit * 3, 15):
+                break
+
+    if live_ok and enriched:
+        enriched.sort(key=lambda x: (-int(x.get("rank_score") or 0), int(x.get("year") or 0), x.get("title", "").lower()))
+        selected = enriched[:limit]
+        scope_label = "all time"
+        if start_year is not None and end_year is not None and start_year == end_year:
+            scope_label = str(start_year)
+        elif start_year is not None and end_year is not None:
+            scope_label = f"{start_year}–{end_year}"
+        elif current:
+            scope_label = str(CURRENT_YEAR)
+        qualifier = []
+        if genre:
+            qualifier.append(genre.title())
+        if platform:
+            qualifier.append(platform.upper() if platform != "steam deck" else "Steam Deck")
+        title = "Top Metacritic Games"
+        if qualifier:
+            title += " — " + " on ".join(qualifier)
+        title += f" ({scope_label})"
+        lines = [f"🏆 **{title}**", "", "Ranked by the verified Metacritic critic score for the requested filters.", ""]
+        results = []
+        for i, game in enumerate(selected, 1):
+            local = game.get("local") or {}
+            year = game.get("year") or local.get("year") or ""
+            plats = game.get("platforms") or local.get("platforms") or ""
+            genres = game.get("genres") or local.get("genre") or game.get("genre") or ""
+            lines.append(f"**{i}. {game['title']}** — **Metacritic {game['rank_score']}/100**")
+            if year: lines.append(f"- **Year:** {year}")
+            if plats: lines.append(f"- **Platforms:** {plats}")
+            if genres:
+                if isinstance(genres, list): genres = ", ".join(genres)
+                lines.append(f"- **Genre:** {genres}")
+            desc = local.get("desc") or game.get("desc")
+            if desc: lines.append(f"- **Why it stands out:** {desc}")
+            lines.append(f"- [Metacritic page]({_metacritic_game_url(game['title'])})")
+            lines.append("")
+            results.append(game["title"])
+        return "\n".join(lines).strip(), results
+
+    # Live retrieval unavailable or no live matches: use only explicitly labeled local data.
+    local = _grounded_local_candidates(start_year, end_year, genre, platform)
+    if score_floor is not None:
+        local = [g for g in local if int(g.get("score") or 0) >= score_floor]
+    selected = local[:limit]
+    if selected:
+        scope_label = "all time" if start_year is None else (str(start_year) if start_year == end_year else f"{start_year}–{end_year}")
+        qualifier = []
+        if genre: qualifier.append(genre.title())
+        if platform: qualifier.append(platform.upper() if platform != "steam deck" else "Steam Deck")
+        heading = "Top Indexed Metacritic Games"
+        if qualifier: heading += " — " + " on ".join(qualifier)
+        heading += f" ({scope_label})"
+        response, results = _format_ranked_games(heading, selected, _metacritic_year_url(end_year or CURRENT_YEAR, platform) if end_year else _metacritic_all_time_url(), "GamePulse indexed historical data", platform)
+        return response + "\n\n*Live Metacritic retrieval was unavailable, so these are clearly labeled indexed historical results rather than a claim of live ranking data.*", results
+
+    url = _metacritic_year_url(end_year or CURRENT_YEAR, platform) if end_year else _metacritic_all_time_url()
+    return (f"I couldn't retrieve a verified Metacritic ranking matching all of those filters right now. I won't substitute unrelated games or invent scores. "
+            f"[Check Metacritic directly]({url})."), []
+
+
 def _is_year_ranking_query(text):
     low = text.lower()
     return bool(re.search(r"\b(best|top|highest rated|highest-rated|rankings?|metacritic|scores?)\b", low))
@@ -2046,11 +2906,69 @@ def _last_titles_from_history(history, state):
     return []
 
 
+def _general_recommendations(text, mem):
+    """Return grounded recommendations when the user asks generally and no specific archetype matched."""
+    platform = _extract_platform(text) or (mem.get("platforms") or [None])[0]
+    preferred = set(mem.get("favorite_genres") or [])
+    disliked = set(mem.get("disliked_genres") or [])
+
+    candidates = []
+    for arch in ALL_ARCHETYPES:
+        arch_text = (arch.get("title", "") + " " + arch.get("description", "")).lower()
+        score = 1
+        for genre in preferred:
+            if genre in arch_text:
+                score += 4
+        for g in arch.get("games", []):
+            if platform and not any(platform.lower() in str(p).lower() or any(a in str(p).lower() for a in PLATFORM_ALIASES.get(platform, [])) for p in g.get("platforms", [])):
+                continue
+            if any(d in arch_text or d in g.get("desc", "").lower() for d in disliked):
+                continue
+            candidates.append((score, g, arch))
+
+    if not candidates:
+        return None, []
+    candidates.sort(key=lambda x: (-x[0], -int(x[1].get("score") or 0), x[1].get("title", "").lower()))
+    seen = set()
+    picks = []
+    for item in candidates:
+        title = item[1].get("title", "")
+        if title.lower() in seen:
+            continue
+        seen.add(title.lower())
+        picks.append(item)
+        if len(picks) >= 5:
+            break
+    if not picks:
+        return None, []
+
+    lines = ["🎮 **Pulsar Recommendations**", ""]
+    if platform:
+        lines.append(f"**Platform:** {platform.upper()}")
+    if preferred:
+        lines.append(f"**Based on:** {', '.join(sorted(preferred))}")
+    lines.append("")
+    results = []
+    for i, (_, g, arch) in enumerate(picks, 1):
+        lines.append(f"**{i}. {g['title']}** — **Metacritic {g.get('score', 'N/A')}**")
+        lines.append(f"- **Genre:** {arch.get('title', 'Gaming')}")
+        lines.append(f"- **Platforms:** {', '.join(g.get('platforms', []))}")
+        lines.append(f"- {g.get('desc', '')}")
+        lines.append(f"- [Metacritic page]({_metacritic_game_url(g['title'])})")
+        lines.append("")
+        results.append(g["title"])
+    return "\n".join(lines).strip(), results
+
+
 def _recommend_from_preferences(text, mem):
     low = text.lower()
     target_platform = _extract_platform(text) or (mem.get("platforms") or [None])[0]
     favorite_genres = mem.get("favorite_genres") or []
     disliked_genres = mem.get("disliked_genres") or []
+
+    # Resolve an explicit "games like X" request to an indexed title when possible.
+    like_match = re.search(r"(?:games like|similar to|fans of)\s+(.+)$", text, flags=re.I)
+    resolved_target = find_game_across_databases(like_match.group(1).strip(" ?")) if like_match else None
 
     # First try the archetype catalog because it already contains curated gaming DNA.
     candidates = []
@@ -2059,6 +2977,12 @@ def _recommend_from_preferences(text, mem):
         keywords = arch.get("keywords", [])
         if any(k in low for k in keywords):
             score += 5
+        if resolved_target:
+            target_text = (resolved_target.get("genre", "") + " " + resolved_target.get("desc", "")).lower()
+            if any(k in target_text or k in arch.get("title", "").lower() for k in keywords):
+                score += 6
+            if resolved_target.get("genre") and resolved_target.get("genre").lower() in arch.get("title", "").lower():
+                score += 4
         for genre in favorite_genres:
             if genre in arch.get("title", "").lower() or genre in arch.get("description", "").lower():
                 score += 2
@@ -2102,8 +3026,10 @@ def _game_response(game, user_text, session_memory):
     lines.append(f"- **Metacritic:** **{game.get('score', 'N/A')}/100**")
     lines.append(f"- **Release year:** {game.get('year', 'N/A')}")
     lines.append(f"- **Platforms:** {game.get('platforms', 'N/A')}")
-    lines.append(f"- **Genre:** {game.get('genre', 'N/A')}")
-    lines.append(f"- **Overview:** {game.get('desc', 'No verified local overview is available.')}")
+    if game.get("genre"):
+        lines.append(f"- **Genre:** {game.get('genre')}")
+    if game.get("desc"):
+        lines.append(f"- **Overview:** {game.get('desc')}")
     lines.append(f"- [Metacritic page]({_metacritic_game_url(title)})")
 
     reviews = get_articles(search=title, limit=5)
@@ -2177,6 +3103,10 @@ def call_groq_api(messages, memory=None, grounded_context=""):
 
 
 def handle_pulsar_chat(messages, user_id=None):
+    try:
+        _ = get_articles(limit=1)
+    except sqlite3.OperationalError:
+        init_db()
     if not messages:
         return ("Hi! I'm Pulsar, your Gaming-Focused AI. Ask me about any game, any release year, rankings, comparisons, reviews, recommendations, current gaming news, or your session preferences.", [])
 
@@ -2255,53 +3185,21 @@ def handle_pulsar_chat(messages, user_id=None):
             state["last_results"] = results
             return reply, results
 
-    # Year, year range, decade, and all-time rankings are deterministic and never handed to the LLM.
-    year_range = _extract_year_range(current_msg)
-    if year_range and _is_year_ranking_query(current_msg):
-        reply, results = get_period_response(year_range[0], year_range[1], platform)
-        state["last_results"] = results
-        return reply, results
-
-    year = _extract_year(current_msg)
-    if year and _is_year_ranking_query(current_msg):
-        min_score = _extract_score_floor(current_msg)
-        ranking_platform = platform if platform else (mem.get("platforms") or [None])[0] if any(k in lower_q for k in ["my platform", "my console", "for me", "on my"] ) else None
-        reply, results = get_year_response(year, min_score=min_score, pref_platform=ranking_platform)
-        state["last_results"] = results
-        return reply, results
-
-    if any(k in lower_q for k in ["last decade", "past decade", "best of the decade", "games of the decade", "last 10 years", "past 10 years"]):
-        ranking_platform = platform if platform else ((mem.get("platforms") or [None])[0] if any(k in lower_q for k in ["my platform", "my console", "for me", "on my"]) else None)
-        reply, results = format_decade_response(ranking_platform)
-        state["last_results"] = results
-        return reply, results
-
-    if any(k in lower_q for k in ["all time", "all-time", "best games ever", "top games ever", "highest rated games in history", "best games in history"]):
-        ranking_platform = platform if platform else ((mem.get("platforms") or [None])[0] if any(k in lower_q for k in ["my platform", "my console", "for me", "on my"]) else None)
-        reply, results = format_all_time_response(ranking_platform)
-        state["last_results"] = results
-        return reply, results
-
-    # Current-year / currently available rankings use Metacritic's live current-year page.
-    if any(k in lower_q for k in ["right now", "out right now", "best games this year", "highest rated this year", "best games of 2026", "current games"]):
-        live, live_ok, source_url = fetch_metacritic_current(limit=10)
-        if live_ok:
-            games = [{"title": x["title"], "score": x["score"], "year": CURRENT_YEAR} for x in live[:10]]
-            if platform:
-                # Current-year page can be filtered server-side on a subsequent request; use local data only as a preference signal here.
-                local = {g["title"].lower(): g for g in _local_year_games(CURRENT_YEAR)}
-                filtered = []
-                aliases = PLATFORM_ALIASES.get(platform, [platform])
-                for g in games:
-                    lg = local.get(g["title"].lower())
-                    if lg and any(a in lg.get("platforms", "").lower() for a in aliases):
-                        g["local"] = lg
-                        filtered.append(g)
-                games = filtered or games
-            reply, results = _format_ranked_games(f"Highest-Rated Games of {CURRENT_YEAR} Right Now", games[:5], source_url, "Metacritic", platform)
+    # Unified ranking router. It deliberately runs before legacy single-dimension routes so
+    # every combination of wording + year/range + platform + genre + score floor is handled
+    # by the same deterministic, grounded engine.
+    if _is_ranking_intent(current_msg):
+        ranking_filters = _ranking_filters(current_msg, mem)
+        # Avoid treating "games like X" as a rankings query unless the user explicitly asked
+        # for a ranking/superlative. Recommendation queries continue to the curated engine below.
+        if not any(k in lower_q for k in ["games like", "similar to", "fans of"]):
+            reply, results = get_filtered_ranking_response(ranking_filters)
             state["last_results"] = results
+            state["last_query"] = current_msg
             return reply, results
-        return f"I couldn't retrieve live Metacritic current-year data right now, so I won't present stale cached scores as current. [Open Metacritic's current-year rankings]({_metacritic_current_url()}).", []
+
+    # A plain release-year question such as "1999 games" can still be answered deterministically.
+    # It is intentionally not routed here unless it looks like a ranking request.
 
     # Direct game lookup/review against the indexed gaming catalogue.
     game = _find_explicit_game_in_text(current_msg)
@@ -2328,6 +3226,8 @@ def handle_pulsar_chat(messages, user_id=None):
     # Recommendations using current session preferences and the curated archetype catalogue.
     if any(k in lower_q for k in ["recommend", "recommendations", "what should i play", "suggest a game", "games like", "similar to", "i like"]):
         reply, results = _recommend_from_preferences(current_msg, mem)
+        if not reply:
+            reply, results = _general_recommendations(current_msg, mem)
         if reply:
             state["last_results"] = results
             return reply, results
@@ -2373,7 +3273,8 @@ def handle_pulsar_chat(messages, user_id=None):
         [],
     )
 
-HTML_TEMPLATE = """<!DOCTYPE html>
+
+HTML_TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -2949,7 +3850,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <div class="pulsar-messages" id="pulsarMessages">
         <div class="pulsar-msg pulsar-msg-bot">
           <strong>Hi! I'm Pulsar, your Gaming-Focused AI.</strong><br><br>
-          I use grounded Metacritic rankings across release years, live gaming feeds when available, your current session context, and the gaming preferences you tell me during the session to answer factually and quickly.<br><br>
+          I use verified Metacritic rankings across all years (1990–2026), live news feeds, your session context, and saved preferences to answer factually and instantly.<br><br>
           Ask for any year (e.g. <em>"best game from 1999"</em> or <em>"top games of 2004"</em>), decade rankings, game reviews, head-to-head comparisons, or personalized recommendations!
         </div>
       </div>
@@ -2975,11 +3876,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   <script>
     let chatHistory = [];
-    let userId = sessionStorage.getItem('gp_pulsar_session_id');
+    let userId = null;
+    try { userId = sessionStorage.getItem('gp_pulsar_session_id'); } catch (_) {}
     if (!userId) {
-      const newId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : (Date.now() + '_' + Math.random().toString(36).substr(2, 9));
-      userId = 'pulsar_session_' + newId;
-      sessionStorage.setItem('gp_pulsar_session_id', userId);
+      userId = 'pulsar_session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      try { sessionStorage.setItem('gp_pulsar_session_id', userId); } catch (_) {}
     }
 
     function setFeedView(mode) {
@@ -3013,20 +3914,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     }
     function closePulsar() {
       document.getElementById('pulsarModal').classList.remove('active');
-      // A Pulsar session lasts until the chatbot window is exited.
+      // Ending the Pulsar window ends this chat session; the next opening starts fresh.
       chatHistory = [];
-      sessionStorage.removeItem('gp_pulsar_session_id');
-      const newId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : (Date.now() + '_' + Math.random().toString(36).substr(2, 9));
-      userId = 'pulsar_session_' + newId;
-      sessionStorage.setItem('gp_pulsar_session_id', userId);
-      const msgs = document.getElementById('pulsarMessages');
-      if (msgs) {
-        msgs.innerHTML = `<div class="pulsar-msg pulsar-msg-bot">
-          <strong>Hi! I'm Pulsar, your Gaming-Focused AI.</strong><br><br>
-          I use grounded gaming data, current Metacritic rankings when available, your session context, and your gaming preferences to answer factually.<br><br>
-          Ask about any release year, game review, ranking, comparison, recommendation, current news, or what I remember about your preferences.
-        </div>`;
-      }
+      try { sessionStorage.removeItem('gp_pulsar_session_id'); } catch (_) {}
+      userId = 'pulsar_session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+      try { sessionStorage.setItem('gp_pulsar_session_id', userId); } catch (_) {}
     }
     function handleKeyDown(e) {
       if (e.key === 'Enter') {
@@ -3108,10 +4000,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
     function formatMarkdown(text) {
       let html = escapeHtml(text);
-      html = html.replace(new RegExp('\\*\\*(.*?)\\*\\*', 'g'), '<strong>$1</strong>');
-      html = html.replace(new RegExp('\\*(.*?)\\*', 'g'), '<em>$1</em>');
-      html = html.replace(new RegExp('\\[([^\\]]+)\\]\\(([^\\)]+)\\)', 'g'), '<a href="$2" target="_blank" rel="noopener">$1</a>');
-      html = html.replace(/\\n/g, '<br>');
+      html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+      html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+      html = html.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      html = html.replace(/\n/g, '<br>');
       return html;
     }
   </script>
@@ -3142,6 +4034,22 @@ class GamePulseHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query_params = urllib.parse.parse_qs(parsed.query)
+
+        if path == "/api/metacritic-status":
+            host = urllib.parse.urlparse(METACRITIC_API_BASE).hostname or "backend.metacritic.com"
+            addresses = _resolve_dns(host)
+            key_available = bool(_discover_metacritic_api_key())
+            payload = {"host": host, "dns_resolved": bool(addresses), "address_count": len(addresses), "api_key_available": key_available}
+            resp_bytes = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp_bytes)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.send_cors_headers()
+            self.end_headers()
+            self.wfile.write(resp_bytes)
+            return
 
         if path == "/api/articles":
             tag = query_params.get("tag", [None])[0]
@@ -3266,7 +4174,8 @@ class GamePulseHandler(BaseHTTPRequestHandler):
                 elif messages and user_msg and (not messages or messages[-1].get("content") != user_msg):
                     messages.append({"role": "user", "content": user_msg})
 
-                reply, _results = handle_pulsar_chat(messages, user_id=user_id)
+                result = handle_pulsar_chat(messages, user_id=user_id)
+                reply = result[0] if isinstance(result, tuple) else result
             except Exception as e:
                 reply = "I encountered an error analyzing your request. Please try again!"
 
@@ -3317,6 +4226,12 @@ class GamePulseHandler(BaseHTTPRequestHandler):
 def main():
     print("[GamePulse AI] Initializing database...")
     init_db()
+
+    print("[GamePulse AI] Warming Metacritic network/cache in the background...")
+    start_metacritic_warmup()
+
+    print("[GamePulse AI] Warming article thumbnails in the background...")
+    start_thumbnail_warmup()
 
     print("[GamePulse AI] Starting background feed sync worker...")
     start_background_scheduler()
